@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://snownico0722.github.io/PaperTodo/sitemap.xml
+# No deployment URL has been assumed. Before publishing, run scripts/configure-site.mjs.

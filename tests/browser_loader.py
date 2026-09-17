@@ -23,7 +23,7 @@ def load_page(page, language='en', base_url='http://127.0.0.1:4173/'):
     css = (ROOT / 'website/assets/playground.css').read_text()
     html = html.replace('</head>', f'<style>{css}</style></head>')
     page.set_content(html, wait_until='domcontentloaded')
-    names = ['plugin-core.mjs', 'story-core.mjs', 'copy.mjs', 'playground.mjs']
+    names = ['plugin-core.mjs', 'story-core.mjs', 'copy.mjs', 'motion.mjs', 'playground.mjs']
     code = []
     for name in names:
         source = (ROOT / 'website/assets' / name).read_text()

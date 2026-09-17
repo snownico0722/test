@@ -2,7 +2,7 @@
 export const recipes = {
   focus: {en: 'Make a 25-minute focus timer with start, pause, and reset controls.', zh: '做一个 25 分钟的专注番茄钟，可以开始、暂停和重置。'},
   habits: {en: 'Make a daily habit tracker with three small rituals and a progress bar.', zh: '做一个习惯打卡插件，记录每天的三个小习惯，带完成进度。'},
-  checklist: {en: 'Make a launch checklist with checkboxes, a progress bar, and a way to add tasks.', zh: '做一个发布清单，可以勾选、添加任务，并显示完成进度。'}
+  converter: {en: 'Make a unit converter for length, temperature and weight, with a reverse direction button.', zh: '做一个单位换算插件，支持长度、温度、重量，并能切换换算方向。'}
 };
 
 export function resolveLanguage(query, stored) {
@@ -16,14 +16,14 @@ export function planFromPrompt(value) {
   let type;
   if (/focus|pomodoro|timer|番茄|专注|计时/i.test(prompt)) type = 'focus';
   else if (/habit|ritual|打卡|习惯/i.test(prompt)) type = 'habits';
-  else if (/checklist|to[- ]?do|launch|任务|清单|待办|发布/i.test(prompt)) type = 'checklist';
+  else if (/convert|units?|单位|换算/i.test(prompt)) type = 'converter';
   else return {ok: false, error: 'unsupported'};
   const minutes = /(-?\d+(?:\.\d+)?)\s*-?\s*(?:minutes?|mins?|分钟|分)/i.exec(prompt);
   const requestedMinutes = Number(minutes?.[1] ?? 25);
   if (type === 'focus' && (!Number.isInteger(requestedMinutes) || requestedMinutes < 1 || requestedMinutes > 120)) {
     return {ok: false, error: 'duration'};
   }
-  const list = type !== 'focus' ? prompt.split(/[:：]/).slice(1).join(':').trim() : '';
+  const list = type === 'habits' ? prompt.split(/[:：]/).slice(1).join(':').trim() : '';
   const items = list ? list.split(/[,，、;；\n]/).map(x => x.trim().replace(/[。.]$/, '').slice(0, 80)).filter(Boolean).slice(0, 6) : null;
   return {ok: true, config: {type, minutes: type === 'focus' ? requestedMinutes : 25, items: items?.length ? items : null}};
 }
@@ -32,12 +32,25 @@ export function escapeHTML(value) {
   return String(value).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 }
 
+// Exact SI definitions; the caller formats the result without changing its value.
+export function convertUnits(value, kind = 'length', reversed = false) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  let result;
+  if (kind === 'temperature') result = reversed ? (number - 32) * 5 / 9 : number * 9 / 5 + 32;
+  else if (kind === 'length') result = reversed ? number * 0.3048 : number / 0.3048;
+  else if (kind === 'weight') result = reversed ? number * 0.45359237 : number / 0.45359237;
+  else return null;
+  return Number.isFinite(result) ? result : null;
+}
+
 // Self-contained so exported HTML runs the same interactions as the preview.
 // Text is always assigned with textContent; prompts/items are never evaluated as code.
 export function mountPlugin(root, config, initialLanguage = 'en') {
   const words = {
-    en: {focus: 'A little focus.', habits: 'Small daily wins.', checklist: 'Ready for takeoff.', tag: 'YOUR LITTLE TOOL', focusHelp: 'One thing at a time. You have got this.', habitsHelp: 'A little better, one check at a time.', checklistHelp: 'Make room for the next big thing.', ready: 'ready when you are', running: 'in your own time', paused: 'take a breath', done: 'nicely done', start: 'Start', pause: 'Pause', resume: 'Resume', reset: 'Reset', again: 'Again', completed: 'complete', add: 'Add', newTask: 'One more thing…', taskLabel: 'New checklist task', limit: 'Up to 12 tasks in this demo.', rituals: ['Drink some water', 'Move for 10 minutes', 'Read a few pages'], tasks: ['Try every interaction', 'Record a short demo', 'Share it with the world']},
-    zh: {focus: '专心做一件事。', habits: '每天，一点小进步。', checklist: '准备好，出发。', tag: '你的桌面小工具', focusHelp: '一次只做一件事，慢慢来。', habitsHelp: '每一次勾选，都是一点进步。', checklistHelp: '给下一个好点子腾出位置。', ready: '准备好了就开始', running: '专注于此时此刻', paused: '休息一下', done: '做得漂亮', start: '开始', pause: '暂停', resume: '继续', reset: '重置', again: '再来一次', completed: '已完成', add: '添加', newTask: '还有一件事……', taskLabel: '新的清单任务', limit: '演示最多添加 12 项任务。', rituals: ['喝一杯水', '活动十分钟', '读几页书'], tasks: ['试一遍所有交互', '录一段演示视频', '把作品分享出去']}
+    en: {focus: 'Focus timer', habits: 'Daily habits', converter: 'Unit converter', tag: 'YOUR DESKTOP PLUGIN', focusHelp: 'One thing at a time. You have got this.', habitsHelp: 'A little better, one check at a time.', ready: 'ready', running: 'running', paused: 'paused', done: 'complete', start: 'Start', pause: 'Pause', resume: 'Resume', reset: 'Reset', again: 'Again', completed: 'complete', add: 'Add', newTask: 'One more thing…', taskLabel: 'New habit', limit: 'Up to 12 tasks in this demo.', rituals: ['Drink some water', 'Move for 10 minutes', 'Read a few pages'], tasks: ['Try every interaction', 'Record a short demo', 'Share it with the world']},
+    zh: {focus: '专注计时', habits: '习惯打卡', converter: '单位换算', tag: '你的桌面插件', focusHelp: '一次只做一件事，慢慢来。', habitsHelp: '每一次勾选，都是一点进步。', ready: '准备就绪', running: '计时中', paused: '已暂停', done: '已完成', start: '开始', pause: '暂停', resume: '继续', reset: '重置', again: '再来一次', completed: '已完成', add: '添加', newTask: '还有一件事……', taskLabel: '新的习惯', limit: '演示最多添加 12 项任务。', rituals: ['喝一杯水', '活动十分钟', '读几页书'], tasks: ['试一遍所有交互', '录一段演示视频', '把作品分享出去']}
   };
   let lang = initialLanguage === 'zh' ? 'zh' : 'en';
   let disposed = false;
@@ -47,9 +60,7 @@ export function mountPlugin(root, config, initialLanguage = 'en') {
   const el = (tag, cls, text, parent) => {const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; if (parent) parent.append(n); return n;};
   root.replaceChildren();
   const card = el('section', 'widget', null, root);
-  const tag = el('p', 'widget-tag', '', card);
   const title = el('h3', '', '', card);
-  const help = el('p', 'widget-help', '', card);
   let update;
   if (config.type === 'focus') {
     const duration = Math.min(120, Math.max(1, Number(config.minutes) || 25)) * 60_000;
@@ -86,6 +97,51 @@ export function mountPlugin(root, config, initialLanguage = 'en') {
     on(toggle, 'click', () => {sampleClock(); if (running) running = false; else {if (!remaining) remaining = duration; deadline = Date.now() + remaining; running = true;} update();});
     on(reset, 'click', () => {running = false; remaining = duration; update();});
     intervalHandles.push(setInterval(() => {if (running) update();}, 250));
+  } else if (config.type === 'converter') {
+    const labels = {
+      en: {length:'Length', temperature:'Temperature', weight:'Weight', from:'From', to:'To', swap:'Swap units', input:'Value to convert', empty:'Enter a number', invalid:'Enter a finite number', hint:'Changes stay in this paper.'},
+      zh: {length:'长度', temperature:'温度', weight:'重量', from:'输入', to:'换算结果', swap:'交换单位', input:'待换算数值', empty:'输入一个数值', invalid:'请输入有效数值', hint:'换算结果即时显示。'}
+    };
+    const units = {length:['m','ft'], temperature:['°C','°F'], weight:['kg','lb']};
+    const values = {length:'1',temperature:'25',weight:'1'};
+    const directions = {length:false,temperature:false,weight:false};
+    let kind = 'length', reversed = false;
+    const tabs = el('div','converter-tabs',null,card); tabs.setAttribute('role','group');
+    const choices = Object.keys(units).map(key => {
+      const button=el('button','', '',tabs); button.type='button'; button.dataset.convertKind=key;
+      on(button,'click',()=>{values[kind]=input.value;directions[kind]=reversed;kind=key;reversed=directions[kind];input.value=values[kind];update();});
+      return button;
+    });
+    const field=el('label','converter-field',null,card);
+    const from=el('span','converter-label','',field);
+    const entry=el('span','converter-entry',null,field);
+    const input=el('input','converter-input',null,entry);
+    input.type='number';input.step='any';input.inputMode='decimal';input.value='1';
+    const sourceUnit=el('span','converter-unit','',entry);
+    const result=el('div','converter-result',null,card);
+    const to=el('span','converter-label','',result);
+    const output=el('output','converter-output','',result);output.setAttribute('aria-live','polite');
+    const actions=el('div','widget-actions',null,card);
+    const swap=el('button','secondary converter-swap','',actions);swap.type='button';
+    update=()=>{
+      if(disposed)return;
+      const w=labels[lang],pair=units[kind],target=pair[reversed?0:1];
+      tabs.setAttribute('aria-label',lang==='zh'?'换算类型':'Conversion type');
+      choices.forEach(button=>{button.textContent=w[button.dataset.convertKind];button.setAttribute('aria-pressed',String(button.dataset.convertKind===kind));});
+      from.textContent=w.from;to.textContent=w.to;sourceUnit.textContent=pair[reversed?1:0];
+      input.setAttribute('aria-label',`${w.input} (${sourceUnit.textContent})`);
+      const number=convertUnits(input.value,kind,reversed);
+      const invalid=input.validity.badInput || number===null && input.value!=='';
+      input.setAttribute('aria-invalid',String(invalid));
+      output.textContent=invalid?w.invalid:number===null?w.empty:`${new Intl.NumberFormat(lang==='zh'?'zh-CN':'en-US',{maximumFractionDigits:4}).format(number)} ${target}`;
+      swap.textContent=`⇄ ${w.swap}`;
+    };
+    on(input,'input',()=>{values[kind]=input.value;update();});
+    on(swap,'click',()=>{
+      const number=convertUnits(input.value,kind,reversed);
+      if(number!==null)input.value=String(number);
+      reversed=!reversed;update();
+    });
   } else {
     const isHabit = config.type === 'habits';
     const defaults = () => words[lang][isHabit ? 'rituals' : 'tasks'];
@@ -126,7 +182,7 @@ export function mountPlugin(root, config, initialLanguage = 'en') {
     let lastLang = '';
     update = () => {if (lastLang !== lang) {renderItems(); lastLang = lang;} previousUpdate();};
   }
-  const translate = () => {tag.textContent = words[lang].tag; title.textContent = words[lang][config.type]; help.textContent = words[lang][`${config.type}Help`]; update();};
+  const translate = () => {title.textContent = words[lang][config.type]; card.setAttribute('aria-label', words[lang][config.type]); update();};
   translate();
   return {
     setLanguage(value) {lang = value === 'zh' ? 'zh' : 'en'; translate();},
@@ -140,5 +196,5 @@ export function exportPlugin(config, language = 'en') {
   const lang = language === 'zh' ? 'zh' : 'en';
   const json = JSON.stringify({config, language: lang}).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   const notice = lang === 'zh' ? 'PaperTodo 浏览器演示 · 本地模板，无 AI 调用。刷新会重置。这不是桌面插件安装包。' : 'PaperTodo browser demo · Local template, no AI call. Refresh to reset. Not a desktop plugin package.';
-  return `<!doctype html>\n<html lang="${lang === 'zh' ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'"><title>PaperTodo — ${escapeHTML(config.type)} demo</title><style>${exportCSS}</style></head><body><main><div id="plugin"></div><p class="notice">${notice}</p></main><script type="application/json" id="config">${json}</script><script>\nconst data = JSON.parse(document.getElementById('config').textContent);\n(${mountPlugin.toString()})(document.getElementById('plugin'), data.config, data.language);\n</script></body></html>\n`;
+  return `<!doctype html>\n<html lang="${lang === 'zh' ? 'zh-CN' : 'en'}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'"><title>PaperTodo — ${escapeHTML(config.type)} demo</title><style>${exportCSS}</style></head><body><main><div id="plugin"></div><p class="notice">${notice}</p></main><script type="application/json" id="config">${json}</script><script>\nconst data = JSON.parse(document.getElementById('config').textContent);\n${convertUnits.toString()}\n(${mountPlugin.toString()})(document.getElementById('plugin'), data.config, data.language);\n</script></body></html>\n`;
 }

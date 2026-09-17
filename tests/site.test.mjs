@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {configureSite} from '../scripts/configure-site.mjs';
-const html='<html><head><meta property="og:image" content="assets/share-preview.jpg"></head><body></body></html>';
+const html='<html><head><meta property="og:image" content="assets/share-workbench.jpg"></head><body></body></html>';
 test('site metadata uses the explicitly supplied repository subpath',() => {
   const out=configureSite(html,'https://example.com/a/project/');
-  assert.ok(out.html.includes('https://example.com/a/project/assets/share-preview.jpg'));
+  assert.ok(out.html.includes('https://example.com/a/project/assets/share-workbench.jpg'));
   assert.ok(out.robots.includes('https://example.com/a/project/sitemap.xml'));
   assert.ok(out.sitemap.includes('<loc>https://example.com/a/project/</loc>'));
 });

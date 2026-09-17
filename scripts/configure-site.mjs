@@ -13,8 +13,8 @@ export function configureSite(html, address) {
   let output = html.replace(/\s*<link\s+rel="canonical"[^>]*>/gi,'')
     .replace(/\s*<meta\s+property="og:url"[^>]*>/gi,'')
     .replace(/\s*<meta\s+name="twitter:image"[^>]*>/gi,'');
-  output = output.replace(/(<meta\s+property="og:image"\s+content=")[^"]*("[^>]*>)/i,`$1${escape(new URL('assets/share-preview.jpg',base).href)}$2`);
-  output = output.replace('</head>', `  <link rel="canonical" href="${escape(base)}">\n  <meta property="og:url" content="${escape(base)}">\n  <meta name="twitter:image" content="${escape(new URL('assets/share-preview.jpg',base).href)}">\n</head>`);
+  output = output.replace(/(<meta\s+property="og:image"\s+content=")[^"]*("[^>]*>)/i,`$1${escape(new URL('assets/share-workbench.jpg',base).href)}$2`);
+  output = output.replace('</head>', `  <link rel="canonical" href="${escape(base)}">\n  <meta property="og:url" content="${escape(base)}">\n  <meta name="twitter:image" content="${escape(new URL('assets/share-workbench.jpg',base).href)}">\n</head>`);
   return {
     html: output,
     robots: `User-agent: *\nAllow: /\n\nSitemap: ${new URL('sitemap.xml',base).href}\n`,

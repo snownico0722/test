@@ -1,92 +1,139 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {MODES, PALETTES, createStoryState, getPaper, noteText, toggleMarkdownTask, moveInQueue, addPaper, effectiveFold, renderMarkdown, clamp} from '../website/assets/story-core.mjs';
+import {CHAPTERS, MODES, PALETTES, createStoryState, getPaper, noteText, toggleMarkdownTask, setPluginConfig, effectiveFold, renderMarkdown, chapterView, clamp, dockPapers, layoutEdgeQueue} from '../website/assets/story-core.mjs';
 import {copy} from '../website/assets/copy.mjs';
-
 const html = readFileSync(new URL('../website/index.html', import.meta.url),'utf8');
 const js = readFileSync(new URL('../website/assets/playground.mjs', import.meta.url),'utf8');
 const css = readFileSync(new URL('../website/assets/playground.css', import.meta.url),'utf8');
-test('actual mode and palette IDs are used',() => {
-  assert.deepEqual(MODES,['off','basic','full']); assert.deepEqual(PALETTES,['warm','ink','forest','rose']);
-  assert.equal(copy.zh.full,'完全渲染'); assert.equal(copy.en.full,'Full Render'); assert.equal(createStoryState().mode,'basic');
+
+test('the product mode IDs and palette values are retained',()=>{
+ assert.deepEqual(MODES,['off','basic','full']); assert.deepEqual(PALETTES,['warm','ink','forest','rose']);
+ assert.equal(copy.zh.full,'完全渲染'); assert.equal(copy.en.full,'Full Render'); assert.equal(createStoryState().mode,'basic');
 });
-test('default state instances are independent',() => {
-  const a=createStoryState(), b=createStoryState(); a.papers[0].tasks[0].checked=false;
-  assert.equal(b.papers[0].tasks[0].checked,true); assert.equal(a.language,'en');
+test('fixed initial papers have a predefined link to the original note',()=>{
+ const state=createStoryState(); assert.deepEqual(state.papers.map(p=>p.id),['todo','note']);
+ assert.equal(state.papers[0].tasks[1].linkedPaper,'note'); assert.equal(getPaper(state,'note').type,'note');
 });
-test('language switches retain default-note checks and custom note text',() => {
-  const note=getPaper(createStoryState(),'note');
-  const index=noteText(note,'en').split('\n').findIndex(line=>line.startsWith('- [ ]'));
-  assert.ok(toggleMarkdownTask(note,'en',index,true));
-  assert.match(noteText(note,'zh').split('\n')[index],/^- \[x\]/);
-  note.text='# 我自己的 text\n- [ ] same line';
-  assert.equal(noteText(note,'en'),noteText(note,'zh'));
-  assert.ok(toggleMarkdownTask(note,'zh',1,true)); assert.equal(note.text,'# 我自己的 text\n- [x] same line');
-  assert.equal(toggleMarkdownTask(note,'en',0,true),false);
+test('fresh sessions do not share mutable check state',()=>{
+ const a=createStoryState(),b=createStoryState();a.papers[0].tasks[0].checked=false;
+ assert.equal(b.papers[0].tasks[0].checked,true);
 });
-test('reading exposure is derived without destroying the saved folded state',() => {
-  const p=getPaper(createStoryState(),'note'); p.folded=true;
-  assert.equal(effectiveFold(p,'markdown'),false); assert.equal(p.folded,true);
-  assert.equal(effectiveFold(p,'capsules'),true); assert.equal(effectiveFold(p,'markdown',false,true),true);
+test('repeated generation replaces the one tool slot without touching base identities or checks',()=>{
+ const state=createStoryState(),note=getPaper(state,'note'),todo=getPaper(state,'todo');
+ todo.tasks[1].checked=true;note.checks[7]=true;
+ for(let i=0;i<10;i++)setPluginConfig(state,{type:i%2?'habits':'focus',minutes:12,items:['custom']});
+ assert.equal(state.papers.length,3);assert.equal(state.pluginRevision,10);
+ assert.equal(getPaper(state,'note'),note);assert.equal(getPaper(state,'todo'),todo);assert.equal(todo.tasks[1].checked,true);
+ assert.deepEqual(state.papers.map(p=>p.id),['todo','note','plugin']);
 });
-test('temporary auto fold does not mutate the paper',() => {
-  const p=getPaper(createStoryState(),'note'); assert.equal(effectiveFold(p,'capsules',true),true); assert.equal(p.folded,false);
-  assert.equal(effectiveFold(p,'overview',false),false);
+test('tool configuration does not alias mutable incoming item arrays',()=>{
+ const state=createStoryState(),input={type:'habits',items:['one'],minutes:25};
+ const plugin=setPluginConfig(state,input);input.items.push('two');assert.deepEqual(plugin.config.items,['one']);
 });
-test('queue reorder stays bounded and does not modify input order',() => {
-  const order=['a','b','c']; assert.deepEqual(moveInQueue(order,'b',-1),['b','a','c']);
-  assert.deepEqual(moveInQueue(order,'a',-1),order); assert.deepEqual(moveInQueue(order,'c',1),order);
-  assert.deepEqual(moveInQueue(order,'missing',1),order); assert.deepEqual(order,['a','b','c']);
+test('all five chapters resolve to a mode of the same workbench',()=>{
+ assert.deepEqual(CHAPTERS,['overview','capsules','markdown','scripts','studio']);
+ assert.equal(chapterView('studio',true),'maker');assert.equal(chapterView('studio',false),'plugins');
+ assert.equal(chapterView('scripts',false),'script');assert.equal(chapterView('markdown',true),'markdown');
 });
-test('paper creation has unique IDs, independent state and a six-paper cap',() => {
-  const state=createStoryState();
-  for(let i=0;i<4;i++) assert.ok(addPaper(state,i%2?'todo':'note'));
-  assert.equal(addPaper(state),null); assert.equal(new Set(state.order).size,6); assert.equal(state.papers.length,6);
-  assert.notEqual(state.papers[0].tasks,state.papers[3].tasks);
+test('language changes retain checked source lines and original custom text',()=>{
+ const note=getPaper(createStoryState(),'note'), index=noteText(note,'en').split('\n').findIndex(l=>l.startsWith('- [ ]'));
+ assert.ok(toggleMarkdownTask(note,'en',index,true));assert.match(noteText(note,'zh').split('\n')[index],/^- \[x\]/);
+ note.text='# custom\n- [ ] keep';assert.ok(toggleMarkdownTask(note,'zh',1,true));assert.equal(noteText(note,'en'),'# custom\n- [x] keep');
+ assert.equal(toggleMarkdownTask(note,'en',0,true),false);
 });
-test('drag coordinates handle edges, tiny viewports and invalid values',() => {
-  assert.equal(clamp(-9,0,1),0); assert.equal(clamp(5,0,1),1); assert.equal(clamp(NaN,0,1),0); assert.equal(clamp(50,12,-6),12);
+test('reading exposure can preserve the underlying folded state',()=>{
+ const note=getPaper(createStoryState(),'note');note.folded=true;assert.equal(effectiveFold(note,'markdown'),false);
+ assert.equal(note.folded,true);assert.equal(effectiveFold(note,'capsules'),true);
 });
-for(const mode of MODES) test(`Markdown ${mode} never injects source HTML`,() => {
-  const output=renderMarkdown('<img src=x onerror=alert(1)>\n[bad](javascript:alert(1))\n<script>bad()</script>',mode);
-  assert.ok(!output.includes('<img')); assert.ok(!output.includes('<script>')); assert.ok(!output.includes('href="javascript:'));
+for(const mode of MODES)test(`Markdown ${mode} is bounded and never evaluates source HTML`,()=>{
+ const output=renderMarkdown('<img src=x onerror=alert(1)>\n[bad](javascript:alert(1))\n<script>bad()</script>',mode);
+ assert.ok(!output.includes('<img'));assert.ok(!output.includes('<script>'));assert.ok(!output.includes('href="javascript:'));
+ assert.ok(renderMarkdown('x'.repeat(20000),'off').length<12100);
 });
-test('rendered tasks are keyboard inputs tied to stable source lines',() => {
-  const output=renderMarkdown('# h\n- [x] done\n- [ ] later','full','sample');
-  assert.ok(output.includes('data-md-check="1"')); assert.ok(output.includes('data-key="md:sample:1"'));
-  assert.ok(output.includes('data-note="sample"')); assert.equal((output.match(/type="checkbox"/g)||[]).length,2);
-  assert.ok(renderMarkdown('- [ ] preview','full','sample',false).includes('disabled'));
+test('full tasks map to stable source lines and previews can be read-only',()=>{
+ const output=renderMarkdown('# h\n- [x] done\n- [ ] later','full','note');
+ assert.match(output,/data-md-check="1"/);assert.match(output,/data-key="md:note:1"/);
+ assert.equal((output.match(/type="checkbox"/g)||[]).length,2);assert.match(renderMarkdown('- [ ] peek','full','note',false),/disabled/);
 });
-test('full rendering supports headings, quote, code, safe links and lists',() => {
-  const output=renderMarkdown('# Title\n\n> Quote\n\n1. one\n2. two\n\n```\n<x>\n```\n\n[link](https://example.com/?q="evil")');
-  assert.match(output,/<h3>Title<\/h3>/); assert.ok(output.includes('<blockquote>'));
-  assert.ok(output.includes('<ol>')); assert.ok(output.includes('&lt;x&gt;')); assert.ok(output.includes('&quot;evil&quot;'));
-  assert.ok(output.includes('rel="noopener noreferrer"'));
+test('full rendering preserves headings, code, quotes, links, ordered lists and escaping',()=>{
+ const out=renderMarkdown('# Title\n\n> Quote\n\n1. one\n2. two\n\n```\n<x>\n```\n\n[link](https://example.com/?q="evil")');
+ for(const text of ['<h3>Title</h3>','<blockquote>','<ol>','&lt;x&gt;','&quot;evil&quot;','rel="noopener noreferrer"'])assert.ok(out.includes(text));
+ assert.equal(renderMarkdown('```\n<unfinished>'),'<pre><code>&lt;unfinished&gt;</code></pre>');
 });
-test('renderer bounds input and closes unfinished code blocks',() => {
-  assert.ok(renderMarkdown('x'.repeat(20000),'off').length<12100);
-  assert.equal(renderMarkdown('```\n<unfinished>'),'<pre><code>&lt;unfinished&gt;</code></pre>');
+test('preview clamping handles narrow and inconsistent bounds',()=>{
+ assert.equal(clamp(-9,0,1),0);assert.equal(clamp(5,0,1),1);assert.equal(clamp(NaN,0,1),0);assert.equal(clamp(50,12,-6),12);
 });
-test('bilingual keys match and every static copy token exists in both languages',() => {
-  assert.deepEqual(Object.keys(copy.en).sort(),Object.keys(copy.zh).sort());
-  for(const [,key] of html.matchAll(/data-(?:t|label)="([^"]+)"/g)) {
-    assert.ok(copy.en[key],`missing en:${key}`); assert.ok(copy.zh[key],`missing zh:${key}`);
+test('one canvas and one workbench replace all duplicated scenes',()=>{
+ assert.equal((html.match(/id="desktop-scene"/g)||[]).length,1);assert.equal((html.match(/class="scene-canvas"/g)||[]).length,1);
+ for(const old of ['id="tool-canvas"','class="mobile-scene"','class="script-stage"'])assert.ok(!html.includes(old));
+ assert.ok(html.indexOf('id="maker"')>html.indexOf('id="workbench-canvas"'));
+ assert.equal((html.match(/data-paper-id=/g)||[]).length,3);
+});
+test('free management and unsupported desktop operations have no visitor controls',()=>{
+ for(const action of ['new-todo','new-note','delete','copy','external','pin','link'])assert.ok(!html.includes(`data-action="${action}"`));
+ assert.ok(!html.includes('contenteditable'));assert.ok(!html.includes('data-add-task'));assert.equal((html.match(/data-drag-handle/g)||[]).length,4);
+});
+test('returning from the maker does not navigate or recreate the desktop',()=>{
+ const body=js.match(/function returnToDesktop\(\) \{([\s\S]*?)\n\}/)[1];
+ assert.ok(!/navigate\(|scrollTo\(|innerHTML/.test(body));assert.ok(body.includes('renderScene()'));
+ assert.ok(js.includes('pluginHandle?.dispose()'));assert.ok(js.includes('target.append(pluginNode)'));
+});
+test('all interface tokens have matching bilingual entries',()=>{
+ assert.deepEqual(Object.keys(copy.en).sort(),Object.keys(copy.zh).sort());
+ for(const [,key] of html.matchAll(/data-(?:t|label)="([^"]+)"/g)){assert.ok(copy.en[key],`en:${key}`);assert.ok(copy.zh[key],`zh:${key}`);}
+});
+test('six features and five FAQ topics remain without adding new demonstration canvases',()=>{
+ assert.equal((html.match(/data-t="feature\dTitle"/g)||[]).length,6);
+ assert.equal((html.match(/<summary data-t="q\d"/g)||[]).length,5);
+ for(const id of [...CHAPTERS,'features','faq','download'])assert.ok(html.includes(`id="${id}"`));
+});
+test('static modules stay local, keep reduced motion, and never hijack wheel events',()=>{
+ assert.ok(html.includes("connect-src 'none'"));assert.ok(css.includes('prefers-reduced-motion'));assert.ok(css.includes('grid-template-columns:repeat(2'));
+ assert.ok(!/\beval\s*\(|new Function\s*\(|fetch\s*\(|XMLHttpRequest/.test(js));assert.ok(!js.includes("addEventListener('wheel'"));
+ assert.ok(!js.includes('min-height: 760px'));assert.ok(js.includes("matchMedia('(min-width: 980px)')"));
+});
+
+test('linked notes stay out of the dock and the generated tool is fourth',()=>{
+ const state=createStoryState(),note=getPaper(state,'note');assert.equal(note.linkedOnly,undefined);
+ for(const folded of [true,false]){state.papers.forEach(p=>p.folded=folded);assert.deepEqual(dockPapers(state).map(p=>p.id),['todo','maker','script']);}
+ setPluginConfig(state,{type:'focus',minutes:12,items:null});assert.equal(getPaper(state,'plugin').folded,true);
+ assert.deepEqual(dockPapers(state).map(p=>p.id),['todo','maker','script','plugin']);
+});
+test('preview growth pushes followers, downward transfer anchors and exit compacts',()=>{
+ const ids=['todo','plugin'];let a=layoutEdgeQueue(ids,'todo',null,600,240);
+ assert.deepEqual(a.tops,[0,252]);let b=layoutEdgeQueue(ids,'plugin',a,600,300);
+ assert.equal(b.tops[1],252);assert.equal(b.tops[0],0);
+ let c=layoutEdgeQueue(ids,'todo',b,600,240);assert.deepEqual(c.tops,[0,252]);
+ assert.deepEqual(layoutEdgeQueue(ids,null,c,600,240).tops,[0,42]);
+});
+test('short preview transfer grows upward and leaves followers reachable',()=>{
+ const ids=['todo','plugin'];const a=layoutEdgeQueue(ids,'todo',null,330,240),b=layoutEdgeQueue(ids,'plugin',a,330,440);
+ assert.ok(b.tops[1]<a.tops[1]);assert.ok(b.tops[1]+b.height<=330);assert.ok(b.tops[1]>=42);
+});
+
+test('dynamic task and template names have real bilingual copy, not fallback keys',()=>{
+ for(const lang of ['en','zh']) {
+  for(const task of createStoryState().papers[0].tasks) assert.ok(copy[lang][task.key],`${lang}:${task.key}`);
+  for(const type of ['focus','habits','converter']) {
+   assert.ok(copy[lang][`${type}Name`]);assert.ok(copy[lang][`${type}Example`]);
   }
+ }
 });
-test('six features and five FAQ themes remain on the home page',() => {
-  assert.equal((html.match(/data-t="feature\dTitle"/g)||[]).length,6);
-  assert.equal((html.match(/<details>/g)||[]).length,5);
-  for(const section of ['overview','capsules','markdown','scripts','studio','features','faq','download']) assert.ok(html.includes(`id="${section}"`));
+test('visitor copy does not leak implementation constraints or duplicate onboarding',()=>{
+ for(const phrase of ['同一组纸片','固定位置','同一个工作台','成功后，工具','原来的纸片还在','没有实际作用的按钮','单一位置']) {
+  assert.ok(!Object.values(copy.zh).some(value=>value.includes(phrase)),phrase);
+ }
+ assert.ok(!html.includes('class="instructions"'));
+ assert.ok(!html.includes('preview-footer-row'));
+ assert.equal((html.match(/id="demo-disclosure"/g)||[]).length,1);
+ assert.ok(js.includes("let selectedRecipe = 'focus'"));
 });
-test('page assets are relative and scripts use no remote API or code evaluator',() => {
-  for(const [,url] of html.matchAll(/(?:src|href)="([^"#]+\.(?:mjs|css|svg|jpg))"/g)) assert.ok(url.startsWith('assets/'),url);
-  assert.ok(!/\beval\s*\(|new Function\s*\(|fetch\s*\(|XMLHttpRequest/.test(js));
-  assert.ok(!js.includes("addEventListener('wheel'"));
-  assert.ok(css.includes('prefers-reduced-motion')); assert.ok(css.includes('grid-template-columns:1fr 1fr') || css.includes('grid-template-columns:repeat(2'));
-});
-test('web pin state is explicit and independent between paper instances',() => {
-  const state=createStoryState(); assert.equal(state.papers[0].pinned,false);
-  state.papers[0].pinned=true; assert.equal(state.papers[1].pinned,false);
-  assert.equal(addPaper(state).pinned,false);
+test('native-like visual metrics have a dedicated app font and compact capsule geometry',()=>{
+ assert.ok(css.includes('--capsule-body-height:30px'));
+ assert.ok(css.includes('--capsule-hit-height:44px'));
+ assert.ok(css.includes('--app-chrome:'));
+ assert.ok(css.includes('border-radius:16px;box-shadow:0 2px 14px'));
+ assert.ok(css.includes('appearance:none;-webkit-appearance:none'));
+ assert.ok(css.includes('@media (forced-colors:active)'));
 });

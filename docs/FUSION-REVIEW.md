@@ -1,3 +1,5 @@
+> 历史材料。当前交互、基线与验证结果以 [INTERACTION-REVISION.md](INTERACTION-REVISION.md) 为准。
+
 # PaperTodo 官网融合改版：审阅说明
 
 ## 范围与版本

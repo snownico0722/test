@@ -4,18 +4,18 @@ import {escapeHTML} from './plugin-core.mjs';
 export const MODES = ['off', 'basic', 'full'];
 export const PALETTES = ['warm', 'ink', 'forest', 'rose'];
 export const seedText = {
-  en: '# A little space to think\n\nKeep **the important things** close. Everything else can wait.\n\n## Today, not someday\n- [x] Make room on the desktop\n- [ ] Try the hover preview\n- [ ] Make a little tool\n\n> A few quiet papers. No extra layer of management.\n\n```powershell\nGet-FileHash .\\PaperTodo.exe\n```\n\n[Explore PaperTodo](https://github.com/snownico0722/PaperTodo)',
-  zh: '# 给想法，留一点位置\n\n把 **重要的事** 放在手边，其他的可以慢一点。\n\n## 就从今天开始\n- [x] 给桌面腾出一点空间\n- [ ] 试试胶囊悬停预览\n- [ ] 做一个自己的小工具\n\n> 几张安静的纸，不多一层管理。\n\n```powershell\nGet-FileHash .\\PaperTodo.exe\n```\n\n[了解 PaperTodo](https://github.com/snownico0722/PaperTodo)'
+  "en": "# A slower weekend\n\nA little **time outdoors**, with no need to hurry.\n\n## Before we go\n- [x] Pick a day\n- [ ] Charge the camera\n- [ ] Pack a book\n\n> Leave room for the unplanned.\n\n`10:00` · Coffee, then a walk.\n\n[Weather forecast](https://www.weather.com/)",
+  "zh": "# 慢一点的周末\n\n留一点 **户外时间**，不必赶路。\n\n## 出发之前\n- [x] 定好时间\n- [ ] 给相机充电\n- [ ] 带上一本书\n\n> 留一点空白，遇见计划之外。\n\n`10:00` · 喝杯咖啡，再去散步。\n\n[天气预报](https://www.weather.com/)"
 };
 export function createStoryState() {
   return {
     language: 'en', chapter: 'overview', palette: 'warm', dark: false,
     mode: 'basic', modeManual: false, autoEnabled: true, queueClosed: false, side: 'right',
-    order: ['todo', 'note'], preview: null, extraCounter: 0,
+    preview: null, pluginRevision: 0,
     papers: [
       {id: 'todo', type: 'todo', title: null, folded: false, pinned: false, x: .08, y: .07, tasks: [
         {id: 't1', key: 'task1', text: null, checked: true},
-        {id: 't2', key: 'task2', text: null, checked: false},
+        {id: 't2', key: 'task2', text: null, checked: false, linkedPaper: 'note'},
         {id: 't3', key: 'task3', text: null, checked: false}
       ]},
       {id: 'note', type: 'note', title: null, folded: false, pinned: false, x: .84, y: .93, text: null, checks: {}}
@@ -36,20 +36,18 @@ export function toggleMarkdownTask(paper, language, lineIndex, checked) {
   else {text[lineIndex] = text[lineIndex].replace(/^(\s*- \[)[ xX](\])/, `$1${checked ? 'x' : ' '}$2`); paper.text = text.join('\n');}
   return true;
 }
-export function moveInQueue(order, id, direction) {
-  const next = [...order], i = next.indexOf(id), j = i + Math.sign(direction);
-  if (i < 0 || j < 0 || j >= next.length) return next;
-  [next[i], next[j]] = [next[j], next[i]];
+// The demo has one reserved tool slot. Replacing it never duplicates base papers.
+export function setPluginConfig(state, config) {
+  const previous = getPaper(state, 'plugin');
+  const next = {id: 'plugin', type: 'plugin', folded: true,
+    config: {...config, items: config.items ? [...config.items] : null}, revision: ++state.pluginRevision};
+  if (previous) state.papers[state.papers.indexOf(previous)] = next;
+  else state.papers.push(next);
   return next;
 }
-export function addPaper(state, type = 'note') {
-  if (state.papers.length >= 6) return null;
-  const n = ++state.extraCounter;
-  const paper = {id: `extra-${n}`, type, title: null, folded: false, pinned: false, x: .2 + n * .12, y: .16 + n * .1};
-  if (type === 'todo') paper.tasks = [];
-  else {paper.text = ''; paper.checks = {};}
-  state.papers.push(paper); state.order.push(paper.id);
-  return paper;
+export const CHAPTERS = ['overview', 'capsules', 'markdown', 'scripts', 'studio'];
+export function chapterView(chapter, makerOpen) {
+  return chapter === 'studio' ? (makerOpen ? 'maker' : 'plugins') : chapter === 'scripts' ? 'script' : chapter === 'markdown' ? 'markdown' : 'desktop';
 }
 export function effectiveFold(paper, chapter, autoFold = false, markdownFolded = false) {
   if (paper.id === 'note' && chapter === 'markdown' && !markdownFolded) return false;
@@ -76,7 +74,7 @@ function inline(text) {
 }
 export function renderMarkdown(source, mode = 'full', key = 'note', interactive = true) {
   const lines = String(source).slice(0, 12000).split('\n');
-  if (mode === 'off') return `<pre>${escapeHTML(lines.join('\n'))}</pre>`;
+  if (mode === 'off') return `<div class="plain-note">${escapeHTML(lines.join('\n'))}</div>`;
   if (mode === 'basic') return lines.map(line => {
     const cls = /^#{1,3} /.test(line) ? 'basic-heading' : /^>/.test(line) ? 'basic-quote' : /^```/.test(line) ? 'basic-code' : '';
     return `<div class="basic-line ${cls}">${escapeHTML(line) || '<br>'}</div>`;
@@ -109,4 +107,29 @@ export function renderMarkdown(source, mode = 'full', key = 'note', interactive 
   endList();
   if (inCode) html.push(`<pre><code>${escapeHTML(code.join('\n'))}</code></pre>`);
   return html.join('');
+}
+
+// The linked note belongs to Today, not to the edge queue. One generated tool
+// replaces the previous tool alongside the three fixed destinations.
+export function dockPapers(state) {
+  return [getPaper(state, 'todo'),
+    {id:'maker', type:'maker', chapter:'studio'},
+    {id:'script', type:'script', chapter:'scripts'}, getPaper(state, 'plugin')].filter(Boolean);
+}
+
+// Source-informed queue policy: expand in place, push followers; on transfer keep
+// the pointed-at top where it fits, otherwise grow upward. Compact only on exit.
+// This small web demo additionally bounds followers so every control stays reachable.
+export function layoutEdgeQueue(ids, owner, previous, available, cardHeight, compact=30, gap=12) {
+  const base=ids.map((_,i)=>i*(compact+gap));
+  if(!owner || !ids.includes(owner)) return {owner:null, ids:[...ids], tops:base, height:compact};
+  const i=ids.indexOf(owner), compatible=previous && previous.ids.join('|')===ids.join('|');
+  const old=compatible?previous.ids.indexOf(previous.owner):-1;
+  const current=compatible?previous.tops:base;
+  const maxHeight=Math.max(compact, available-(ids.length-1)*(compact+gap));
+  const height=Math.min(cardHeight,maxHeight), tops=[...base];
+  if(old>=0 && i>=old) tops[i]=Math.min(current[i],available-height-(ids.length-i-1)*(compact+gap));
+  tops[i]=Math.max(base[i],tops[i]);
+  for(let j=i+1;j<ids.length;j++)tops[j]=tops[j-1]+(j===i+1?height:compact)+gap;
+  return {owner, ids:[...ids], tops, height};
 }

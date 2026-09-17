@@ -1,3 +1,7 @@
+> 状态更新：本文是早期工作台重构需求，已由当前实现及后续用户修订推进到第四版。请先阅读 [第四版修订记录](WORKBENCH-REVISION-V4.md) 和当前 README；发生冲突时以第四版的明确规则为准，尤其是插件制作完成时只展示生成插件、第三个预设为单位换算，以及手动调整后的 Markdown 布局保持。
+
+> 历史材料。当前交互、基线与验证结果以 [INTERACTION-REVISION.md](INTERACTION-REVISION.md) 为准。
+
 # PaperTodo 下一轮迭代：统一工作台与精简交互
 
 这是用户在查看融合版预览后确认的最新方向，优先于 `PaperTodo-官网融合改版需求-GPT6Pro.md`、README 和 `FUSION-REVIEW.md` 中与之冲突的旧范围。旧需求文档原样保留作背景。本轮直接在已经导入的融合源码上实现，不从最初的 Playground 页面重新开始。

@@ -1,432 +1,462 @@
-"""Real Chromium interaction checks. HTTP by default, explicit DOM fixture opt-in.
-Run from the repository root: python tests/browser_smoke.py
+"""Real HTTP by default. Explicit PAPER_DEMO_IN_MEMORY=1 never qualifies as HTTP/CSP.
+
+Motion cases use actual mouse/keyboard/touch input at normal animation speed, record
+presented rectangles each requestAnimationFrame, and optionally record browser video.
 """
-from contextlib import contextmanager
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+from contextlib import contextmanager
 from threading import Thread
-from urllib.parse import urlsplit
-import json
-import os
-import shutil
-import sys
-import subprocess
-import traceback
-import time
-
-from playwright.sync_api import sync_playwright, expect
-from browser_loader import ROOT, MODE, load_page
-
-EVIDENCE = ROOT / 'evidence'
-EVIDENCE.mkdir(exist_ok=True)
-RESULTS = []
-BASE = ''
-
-class Handler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(ROOT / 'website'), **kwargs)
-    def log_message(self, *_):
-        pass
-    def translate_path(self, path):
-        if path.startswith('/nested/test/'):
-            path = path[len('/nested/test') :]
-        return super().translate_path(path)
-
+import argparse,json,os,shutil,time,traceback,subprocess,sys
+from playwright.sync_api import sync_playwright,expect
+from browser_loader import load_page, MODE
+ROOT=Path(__file__).resolve().parents[1]
+EVIDENCE=ROOT/'evidence';EVIDENCE.mkdir(exist_ok=True)
 @contextmanager
 def server():
-    httpd = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    thread = Thread(target=httpd.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f'http://127.0.0.1:{httpd.server_port}/'
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self,*args,**kw):super().__init__(*args,directory=str(ROOT/'website'),**kw)
+        def do_GET(self):
+            if self.path.startswith('/nested/test/'):self.path='/'+self.path[len('/nested/test/'):]
+            super().do_GET()
+        def log_message(self,*args):pass
+    http=ThreadingHTTPServer(('127.0.0.1',0),Handler);thread=Thread(target=http.serve_forever,daemon=True);thread.start()
+    try:yield f'http://127.0.0.1:{http.server_port}/'
+    finally:http.shutdown();http.server_close()
+def launch(pw):
+    args={'headless':True};exe=os.environ.get('CHROMIUM_PATH') or shutil.which('chromium')
+    if exe:args['executable_path']=exe
+    return pw.chromium.launch(**args)
+INTERVAL_PROBE="""(()=>{const set=window.setInterval.bind(window),clear=window.clearInterval.bind(window);window.__activeIntervals=new Set();window.setInterval=(...a)=>{let h=set(...a);__activeIntervals.add(h);return h;};window.clearInterval=h=>{__activeIntervals.delete(h);return clear(h);};})();"""
+def rest(p,ms=420):p.wait_for_timeout(ms)
+def go(p,chapter):
+    p.locator(f'[data-chapter-link="{chapter}"]' if p.viewport_size['width']<980 else f'#navigation a[href="#{chapter}"]').click()
+    expect(p.locator('#desktop-scene')).to_have_attribute('data-chapter',chapter);rest(p,650)
+def make(p,recipe='focus'):
+    if p.locator('#desktop-scene').get_attribute('data-chapter')!='studio':go(p,'studio')
+    if p.locator('#maker').is_hidden():p.locator('#make-again').click();rest(p)
+    p.locator(f'[data-recipe="{recipe}"]').click();p.locator('#build').click()
+    expect(p.locator('#desktop-scene')).to_have_attribute('data-view','plugins');rest(p,600)
+    expect(p.locator('[data-capsule="plugin"]')).to_be_visible();expect(p.locator('#plugin-paper')).to_be_visible()
+    expect(p.locator('#todo-paper')).to_be_hidden();expect(p.locator('#note-paper')).to_be_hidden()
+def desktop(p):
+    p.locator('[data-capsule="plugin"]').click();rest(p)
+def identity(p):
+    return p.evaluate('__original.every(n=>n.isConnected) && __original[0]===document.querySelector("#desktop-scene") && document.querySelectorAll("#live-plugin").length<=1')
+def assert_bounds(p):
+    assert p.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),'horizontal overflow'
+    assert p.locator('.scene-canvas').count()==1
+    scene=p.locator('#desktop-scene').bounding_box();assert scene and scene['width']>250
+    if p.viewport_size['width']>=980:
+        assert scene['y']>=50 and scene['y']+scene['height']<=p.viewport_size['height']-20,scene
+    for sel in ['#todo-paper','#note-paper','#plugin-paper','#maker','#script-editor','#script-result','#preview-card','.edge-slot']:
+        for loc in p.locator(sel).all():
+            if loc.is_visible():
+                r=loc.bounding_box();assert r['x']>=scene['x']-1 and r['x']+r['width']<=scene['x']+scene['width']+1,(sel,r,scene)
+    assert identity(p)
+def initial(p):
+    for sel in ['#todo-paper','#note-paper','[data-capsule="todo"]']:expect(p.locator(sel)).to_be_visible()
+    assert p.locator('[data-capsule="note"]').count()==0
+    assert p.locator('[data-capsule="todo"] .capsule-title').inner_text()==p.locator('#todo-title').inner_text()
+    assert_bounds(p)
+def linked(p):
+    p.locator('#note-paper [data-action="fold"]').click();rest(p)
+    expect(p.locator('#note-paper')).to_be_hidden();assert p.locator('[data-capsule="note"]').count()==0
+    p.locator('#todo-body .task-link').click();rest(p);expect(p.locator('#note-paper')).to_be_visible();assert identity(p)
+def preview(p):
+    p.locator('#todo-paper [data-action="fold"]').click();rest(p,550)
+    p.locator('[data-capsule="todo"]').hover();rest(p)
+    expect(p.locator('#preview-card')).to_be_visible()
+    assert p.locator('#preview-card').evaluate('n=>n.parentElement.dataset.edgeSlot')=='todo'
+    p.locator('#preview-body [data-task="t2"]').check();expect(p.locator('#todo-body [data-task="t2"]')).to_be_checked()
+    p.locator('#preview-body .task-link').click();rest(p);expect(p.locator('#note-paper')).to_be_visible()
+    rest(p,450);p.locator('[data-capsule="todo"]').hover();rest(p)
+    # Clicking the text opens the paper; only its checkbox checks the item.
+    p.locator('#preview-body .task-text').last.click();rest(p)
+    expect(p.locator('#todo-paper')).to_be_visible();expect(p.locator('#todo-body [data-task="t3"]')).not_to_be_checked()
+    p.mouse.move(620,150);rest(p,500);p.locator('[data-capsule="todo"]').hover();rest(p)
+    p.mouse.move(610,790);rest(p,450);expect(p.locator('#preview-card')).to_be_hidden()
+def dragging(p):
+    header=p.locator('#todo-paper .paper-header');r=header.bounding_box();before=p.locator('#todo-paper').bounding_box()
+    p.mouse.move(r['x']+90,r['y']+17);p.mouse.down();p.mouse.move(r['x']+145,r['y']+75,steps=12);p.mouse.up()
+    after=p.locator('#todo-paper').bounding_box();assert after['x']>before['x']+20 and after['y']>before['y']+40,(before,after)
+    header.focus();p.keyboard.press('Shift+ArrowDown');p.keyboard.press('ArrowLeft');after=p.locator('#todo-paper').bounding_box()
+    p.locator('#todo-paper [data-action="fold"]').click();rest(p);p.locator('[data-capsule="todo"]').click();rest(p)
+    r=p.locator('#todo-paper').bounding_box();assert abs(r['x']-after['x'])<1 and abs(r['y']-after['y'])<1
+    go(p,'markdown');go(p,'overview');r=p.locator('#todo-paper').bounding_box();assert abs(r['x']-after['x'])<1,(r,after)
+    assert_bounds(p)
+def queue(p):
+    initial(p);p.locator('#queue-toggle').click();rest(p);expect(p.locator('[data-edge-slot="todo"]')).to_be_hidden()
+    expect(p.locator('#todo-paper')).to_be_visible();p.locator('#queue-toggle').click();rest(p);initial(p)
+    for chapter in ['capsules','markdown','scripts','studio','overview']:
+        go(p,chapter);expect(p.locator('[data-capsule="todo"]')).to_be_visible();assert p.locator('[data-capsule="note"]').count()==0
+        assert_bounds(p)
+def markdown(p):
+    go(p,'markdown');p.locator('[data-mode="full"]').click();rest(p)
+    p.locator('#note-body [data-md-check]').nth(1).check();p.locator('#language').click();rest(p)
+    expect(p.locator('#note-body [data-md-check]').nth(1)).to_be_checked()
+    p.locator('[data-mode="off"]').click();assert '- [x]' in p.locator('#note-body').inner_text()
+    assert p.locator('#note-body pre,#note-body code').count()==0
+    assert p.locator('#note-body .plain-note').evaluate('n=>getComputedStyle(n).backgroundColor')=='rgba(0, 0, 0, 0)'
+    go(p,'overview');go(p,'markdown');expect(p.locator('[data-mode="off"]')).to_have_attribute('aria-pressed','true')
+def scripts(p):
+    go(p,'scripts')
+    cycle=p.locator('#script-next')
+    assert p.locator('#scripts .actions button').count()==1
+    cycle.click();rest(p);expect(p.locator('#script-result')).to_be_visible()
+    cycle.click();rest(p);expect(p.locator('#script-editor')).to_be_visible()
+    cycle.click();cycle.click();rest(p)
+    expect(p.locator('#script-editor')).to_be_visible()
+    expect(p.locator('#script-result')).to_be_hidden()
+    p.locator('#script-editor [data-script="fold"]').click();rest(p);expect(p.locator('#lightning')).to_be_visible()
+    p.locator('#lightning').click();rest(p);expect(p.locator('#script-result')).to_be_visible()
+    p.locator('#script-result [data-script="back"]').click();rest(p);expect(p.locator('#script-editor')).to_be_visible()
+    assert identity(p);assert_bounds(p)
+def tool(p):
+    make(p);p.evaluate('window.__tool=document.querySelector("#live-plugin")')
+    p.locator('[data-capsule="plugin"]').hover();rest(p);p.locator('#live-plugin .widget-actions button').first.click();rest(p,1200)
+    assert p.locator('#live-plugin .timer-digits').inner_text()!='25:00'
+    p.locator('#preview-open').click();rest(p);assert p.evaluate('__tool===document.querySelector("#plugin-home>#live-plugin")')
+    p.locator('#plugin-paper [data-action="fold"]').click();rest(p)
+    go(p,'capsules');expect(p.locator('[data-capsule="plugin"]')).to_be_visible();assert p.evaluate('__tool.isConnected')
+    p.locator('[data-capsule="plugin"]').click();rest(p);assert p.locator('#live-plugin .timer-digits').inner_text()!='25:00'
+    assert p.evaluate('__activeIntervals.size')==1
 
-def visit(page, anchor):
-    page.locator(f'#{anchor}').evaluate("el => window.scrollTo({top:scrollY+el.getBoundingClientRect().top-parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--nav')),behavior:'instant'})")
-    page.wait_for_timeout(100)
+def replace(p):
+    make(p);p.evaluate('window.__old=document.querySelector("#live-plugin")')
+    p.locator('#make-again').click();rest(p);assert p.locator('#maker textarea').count()==0
+    p.locator('[data-recipe="focus"]').click();p.locator('#build').click();p.locator('#cancel-build').click();rest(p,1600)
+    assert p.evaluate('__old.isConnected && __activeIntervals.size===1')
+    # Force a renderer failure, not a model failure: transaction must preserve the old slot.
+    p.evaluate("""(()=>{const original=document.createElement.bind(document);document.createElement=(tag,...a)=>{if(tag==='section'){document.createElement=original;throw new Error('test renderer failure');}return original(tag,...a);};})()""")
+    p.locator('#build').click();rest(p,1700);expect(p.locator('#prompt-error')).not_to_be_empty();assert p.evaluate('__old.isConnected && __activeIntervals.size===1')
+    p.locator('[data-recipe="converter"]').click();p.locator('#build').click();expect(p.locator('#maker')).to_be_hidden();rest(p)
+    assert p.evaluate('!__old.isConnected && __activeIntervals.size===0');assert p.locator('[data-capsule="plugin"]').count()==1
+    p.locator('[data-capsule="plugin"]').click();rest(p)
+    p.locator('#live-plugin .converter-input').fill('2');p.locator('#language').click();expect(p.locator('#live-plugin .converter-input')).to_have_value('2')
+    assert p.locator('#tool-title').inner_text()==p.locator('[data-capsule="plugin"] .capsule-title').inner_text()
 
-def click_language(page):
-    # Physical pointer input avoids Chromium's scrollIntoView-on-sticky-header quirk.
-    box=page.locator('#language').bounding_box()
-    assert box and 0 <= box['y'] < page.viewport_size['height']
-    page.mouse.click(box['x']+box['width']/2,box['y']+box['height']/2)
+def preset_only(p):
+    make(p,'converter')
+    assert p.locator('#source-details,#download-demo,#prompt,textarea,[contenteditable]').count()==0
+    assert p.locator('a[href*="CodexCliBridge"]').count()==0
+    desktop(p);p.locator('#live-plugin .converter-input').fill('0.3048')
+    expect(p.locator('#live-plugin .converter-output')).to_have_text('1 ft')
 
-def click(scene, action, paper=None):
-    selector = f'[data-action="{action}"]' + (f'[data-paper="{paper}"]' if paper else '')
-    scene.locator(selector).first.click()
+def keyboard(p):
+    cap=p.locator('[data-capsule="todo"]');cap.focus();p.keyboard.press('ArrowLeft');rest(p);expect(p.locator('#preview-open')).to_be_focused()
+    p.keyboard.press('Escape');rest(p);expect(cap).to_be_focused()
+    p.keyboard.press('Enter');rest(p);expect(p.locator('#todo-paper .paper-header')).to_be_focused()
+    go(p,'studio');p.locator('[data-recipe="focus"]').press('Enter')
+    expect(p.locator('#desktop-scene')).to_have_attribute('data-chapter','studio')
+    p.locator('#build').press('Enter');expect(p.locator('#desktop-scene')).to_have_attribute('data-view','plugins')
+    rest(p);assert p.evaluate('document.getAnimations().every(a=>a.effect.getComputedTiming().duration<=1)')
 
-def studio_build(page, prompt=None):
-    visit(page, 'studio')
-    if prompt is not None:
-        page.locator('#prompt').fill(prompt)
-    page.locator('#build').click()
-    expect(page.locator('#plugin-preview')).to_be_visible()
-    expect(page.locator('#pipeline')).to_have_attribute('aria-busy','false')
+def touch(p):
+    cap=p.locator('[data-capsule="todo"]');long_press(p,cap);expect(p.locator('#preview-card')).to_be_visible()
+    p.locator('#preview-body [data-task="t2"]').tap();expect(p.locator('#todo-body [data-task="t2"]')).to_be_checked()
+    p.locator('#preview-body .task-link').tap();rest(p);expect(p.locator('#note-paper')).to_be_visible()
+    h=p.locator('#todo-paper .paper-header');h.scroll_into_view_if_needed();r=h.bounding_box();old=p.locator('#todo-paper').bounding_box()
+    session=p.context.new_cdp_session(p);x=r['x']+70;y=r['y']+20
+    session.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x,'y':y}]})
+    for d in [10,25,45]:session.send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':x,'y':y+d}]})
+    session.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]});session.detach()
+    new=p.locator('#todo-paper').bounding_box();assert new['y']>old['y']+30,(old,new)
+    make(p);p.locator('[data-capsule="plugin"]').tap();rest(p);expect(p.locator('#plugin-paper')).to_be_visible();assert_bounds(p)
 
-def state_persistence(page):
-    scene = page.locator('#desktop-scene')
-    scene.locator('[data-title=todo]').fill('My 自定义 title')
-    scene.locator('[data-task-text=t2]').fill('Do not replace <my text>')
-    scene.locator('[data-task=t3]').check()
-    scene.locator('[data-draft=todo]').fill('Unsubmitted text')
-    click(scene,'edit-note','note')
-    text = '# My 笔记\n\n- [ ] Keep me\n\nA personal paragraph.'
-    scene.locator('[data-note-input=note]').fill(text)
-    click(scene,'fold','note')
-    expect(scene.locator('[data-id=note]')).to_be_hidden()
-    visit(page,'markdown')
-    expect(scene.locator('[data-id=note]')).to_be_visible()
-    expect(scene.locator('[data-note-input=note]')).to_have_value(text)
-    click_language(page)
-    expect(scene.locator('[data-note-input=note]')).to_have_value(text)
-    click(scene,'edit-note','note')
-    page.locator('[data-mode=full]').click()
-    scene.locator('[data-md-check="2"]').check()
-    assert page.evaluate('document.activeElement.dataset.key') == 'md:note:2'
-    visit(page,'overview')
-    expect(scene.locator('[data-id=note]')).to_be_hidden()
-    expect(scene.locator('[data-title=todo]')).to_have_value('My 自定义 title')
-    expect(scene.locator('[data-task-text=t2]')).to_have_value('Do not replace <my text>')
-    expect(scene.locator('[data-task=t3]')).to_be_checked()
-    expect(scene.locator('[data-draft=todo]')).to_have_value('Unsubmitted text')
-    page.set_viewport_size({'width':390,'height':844})
-    mobile = page.locator('[data-scene=overview]')
-    mobile.scroll_into_view_if_needed()
-    expect(mobile.locator('[data-task=t3]')).to_be_checked()
-    expect(mobile.locator('[data-draft=todo]')).to_have_value('Unsubmitted text')
-    mobile.locator('[data-capsule=note]').click()
-    click(mobile,'open','note')
-    click(mobile,'edit-note','note')
-    expect(mobile.locator('[data-note-input=note]')).to_have_value(text.replace('- [ ]','- [x]'))
+FRAME_PROBE="""(()=>{window.__frames=[];const generation=window.__frameGeneration=(window.__frameGeneration||0)+1;let stop=performance.now()+1600;const tick=t=>{if(window.__frameGeneration!==generation)return;const c=document.querySelector('#workbench-canvas').getBoundingClientRect();let nodes=[...document.querySelectorAll('#paper-deck>.paper,#maker,#script-editor,#script-result,.edge-slot')].filter(n=>!n.hidden);__frames.push({t,canvas:{x:c.x,y:c.y,w:c.width,h:c.height},nodes:nodes.map(n=>{const r=n.getBoundingClientRect();return {id:n.id||n.dataset.edgeSlot,x:r.x-c.x,y:r.y-c.y,w:r.width,h:r.height,opacity:Number(getComputedStyle(n).opacity),moving:n.dataset.moving||''};})});if(t<stop)requestAnimationFrame(tick);};requestAnimationFrame(tick);})();"""
+def sample(p,action,name,ms=560):
+    p.evaluate(FRAME_PROBE);action();rest(p,ms);frames=p.evaluate('__frames');
+    (EVIDENCE/'frames').mkdir(exist_ok=True);(EVIDENCE/'frames'/f'{name}.json').write_text(json.dumps(frames,indent=1))
+    assert len(frames)>=5, len(frames)
+    for fr in frames:
+        for r in fr['nodes']:
+            if r['opacity']>.02:
+                assert r['x']>=-2 and r['x']+r['w']<=fr['canvas']['w']+2,(name,r,fr['canvas'])
+    return frames
 
-def capsule_preview_queue(page):
-    visit(page,'capsules')
-    page.locator('[data-action=fold-all]').click()
-    scene=page.locator('#desktop-scene')
-    expect(scene.locator('.paper:visible')).to_have_count(0)
-    scene.locator('[data-capsule=todo]').hover()
-    expect(scene.locator('.preview-card')).to_be_visible()
-    scene.locator('.preview-card [data-task=t2]').check()
-    assert page.evaluate('document.activeElement.dataset.key') == 'preview-check:todo:t2'
-    page.keyboard.press('Escape')
-    expect(scene.locator('.preview-card')).to_have_count(0)
-    assert page.evaluate('document.activeElement.dataset.key') == 'capsule:todo'
-    page.mouse.move(10,500)
-    click(scene,'queue')
-    expect(scene.locator('.queue-items')).to_be_hidden()
-    click(scene,'queue')
-    expect(scene.locator('.queue-items')).to_be_visible()
-    first=scene.locator('[data-capsule]').first.get_attribute('data-capsule')
-    click(scene,'reorder')
-    assert scene.locator('[data-capsule]').first.get_attribute('data-capsule') != first
-    click(scene,'side')
-    expect(scene).to_have_attribute('data-side','left')
-    scene.locator('[data-capsule=todo]').focus()
-    page.keyboard.press('Enter')
-    expect(scene.locator('.preview-card [data-task=t2]')).to_be_checked()
-    click(scene,'open','todo')
-    expect(scene.locator('[data-id=todo]')).to_be_visible()
-    expect(scene.locator('[data-id=note]')).to_be_hidden()
-    expect(scene.locator('[data-id=todo] [data-task=t2]')).to_be_checked()
+def motion_case(p):
+    r=p.locator('#desktop-scene').bounding_box();initial_height=r['height']
+    frames=sample(p,lambda:p.locator('#todo-paper [data-action="fold"]').click(),'fold')
+    widths=[n['w'] for fr in frames for n in fr['nodes'] if n['id']=='todo-paper' and n['moving']]
+    assert len(widths)>3 and max(widths)-min(widths)>120,widths
+    sample(p,lambda:p.locator('[data-capsule="todo"]').click(),'unfold');expect(p.locator('#todo-paper')).to_be_visible()
+    rest(p,450)
+    frames=sample(p,lambda:p.locator('[data-capsule="todo"]').hover(),'preview-open')
+    slots=[(fr,n) for fr in frames for n in fr['nodes'] if n['id']=='todo']
+    assert any(170<n['w']<325 for _,n in slots),slots
+    assert all(abs(n['x']+n['w']-fr['canvas']['w'])<2 for fr,n in slots),'edge detaches while resizing'
+    sample(p,lambda:p.mouse.move(580,600),'preview-retract');expect(p.locator('#preview-card')).to_be_hidden()
+    for name in ['markdown','scripts','studio','overview']:
+        sample(p,lambda name=name:go(p,name),'chapter-'+name,100)
+        assert abs(p.locator('#desktop-scene').bounding_box()['height']-initial_height)<1
+    assert identity(p)
 
-def markdown_modes(page):
-    visit(page,'markdown'); scene=page.locator('#desktop-scene')
-    page.locator('[data-mode=off]').click()
-    expect(scene.locator('[data-id=note] pre')).to_contain_text('# A little space')
-    page.locator('[data-mode=basic]').click()
-    assert scene.locator('.basic-heading').count() == 2
-    page.locator('[data-mode=full]').click()
-    expect(scene.locator('[data-md-check]')).to_have_count(3)
-    scene.locator('[data-md-check="6"]').check()
-    click_language(page)
-    expect(scene.locator('[data-md-check="6"]')).to_be_checked()
-    expect(scene.locator('[data-id=note] h3')).to_contain_text('给想法')
-    page.locator('[data-mode=off]').click()
-    expect(scene.locator('[data-id=note] pre')).to_contain_text('- [x] 试试胶囊悬停预览')
-    visit(page,'capsules'); visit(page,'markdown')
-    expect(page.locator('[data-mode=off]')).to_have_attribute('aria-pressed','true')
-    click(scene,'external','note')
-    expect(page.locator('#dialog')).to_be_visible()
-    expect(page.locator('#dialog-text')).to_contain_text('系统关联程序')
-    page.keyboard.press('Escape')
-    expect(page.locator('#dialog')).not_to_be_visible()
-    assert page.evaluate('document.activeElement.dataset.key') == 'external:note'
+def transfer(p):
+    make(p);p.locator('[data-capsule="todo"]').hover();rest(p)
+    r=p.locator('[data-edge-slot="plugin"]').bounding_box();a=p.locator('[data-edge-slot="script"]').bounding_box();assert r['y']>=a['y']+a['height']+7
+    # Cross the actual narrow corridor before entering the next member.
+    x=r['x']+r['width']-30;p.mouse.move(x,a['y']+a['height']+5);rest(p,180);expect(p.locator('#preview-card')).to_be_visible()
+    sample(p,lambda:p.mouse.move(x,r['y']+20),'preview-transfer-down')
+    assert p.locator('#preview-card').evaluate('n=>n.parentElement.dataset.edgeSlot')=='plugin'
+    p.locator('#live-plugin .widget-actions button').first.click();rest(p,1100)
+    sample(p,lambda:p.locator('[data-capsule="todo"]').hover(),'preview-transfer-up')
+    assert p.locator('#preview-card').evaluate('n=>n.parentElement.dataset.edgeSlot')=='todo'
+    p.mouse.move(580,600);rest(p,450)
+    expected=p.evaluate('parseFloat(getComputedStyle(document.querySelector("#desktop-scene")).getPropertyValue("--capsule-hit-height"))+parseFloat(getComputedStyle(document.querySelector("#desktop-scene")).getPropertyValue("--capsule-gap"))')
+    assert abs(p.locator('[data-edge-slot="plugin"]').bounding_box()['y']-p.locator('[data-edge-slot="todo"]').bounding_box()['y']-3*expected)<1
+    assert p.evaluate('__activeIntervals.size')==1
 
-def drag_add_reset(page):
-    scene=page.locator('#desktop-scene'); grip=scene.locator('[data-drag=todo]')
-    b=grip.bounding_box(); page.mouse.move(b['x']+b['width']/2,b['y']+b['height']/2)
-    page.mouse.down(); page.mouse.move(b['x']+220,b['y']+145,steps=8); page.mouse.up()
-    position=scene.locator('[data-id=todo]').evaluate('(n)=>({left:parseFloat(n.style.left),top:parseFloat(n.style.top)})')
-    assert position['left']>30 and position['top']>60
-    grip.focus(); page.keyboard.press('Shift+ArrowLeft')
-    assert scene.locator('[data-id=todo]').evaluate('(n)=>parseFloat(n.style.left)') < position['left']
-    before=scene.locator('[data-id=todo]').get_attribute('style')
-    scene.locator('[data-task-text=t2]').fill('typing does not drag')
-    page.keyboard.press('ArrowRight')
-    assert scene.locator('[data-id=todo]').get_attribute('style') == before
-    for i in range(9):
-        scene.locator('[data-draft=todo]').fill(f'Additional task {i}')
-        scene.locator('[data-add-task=todo] button').click()
-    expect(scene.locator('[data-id=todo] .todo-row')).to_have_count(12)
-    expect(scene.locator('[data-add-task=todo] button')).to_be_disabled()
-    for _ in range(5):
-        scene.locator('.scene-bottom [data-action=new-todo]').click()
-    expect(scene.locator('.paper')).to_have_count(6)
-    expect(page.locator('#toast')).to_contain_text('six papers')
-    click(scene,'reset'); page.locator('#dialog-cancel').click()
-    expect(scene.locator('.paper')).to_have_count(6)
-    click(scene,'reset'); page.locator('#dialog-confirm').click()
-    expect(scene.locator('.paper')).to_have_count(2)
-    expect(scene.locator('[data-task=t3]')).not_to_be_checked()
+def interruption(p):
+    # Real mouse clicks avoid Playwright's animation-stability wait during reversal.
+    p.locator('#todo-paper .paper-header').focus();p.keyboard.press('PageDown');rest(p,100)
+    p.keyboard.press('PageDown');rest(p,90);p.keyboard.press('PageUp');rest(p,80);p.keyboard.press('PageUp');rest(p,1300)
+    expect(p.locator('#desktop-scene')).to_have_attribute('data-chapter','overview');initial(p)
+    for _ in range(3):
+        b=p.locator('#todo-paper [data-action="fold"]').bounding_box();p.mouse.click(b['x']+b['width']/2,b['y']+b['height']/2);rest(p,65)
+        cap=p.locator('[data-capsule="todo"]').bounding_box();p.mouse.click(cap['x']+20,cap['y']+cap['height']/2);rest(p,90)
+    rest(p,450);expect(p.locator('#todo-paper')).to_be_visible();assert p.locator('[data-moving]').count()==0;assert_bounds(p)
 
-def script_flow(page):
-    visit(page,'scripts')
-    page.locator('#script-editor [data-script=fold]').first.click()
-    expect(page.locator('#lightning')).to_be_visible()
-    page.locator('#lightning').click(button='right')
-    expect(page.locator('#script-editor')).to_be_visible()
-    page.locator('#script-editor [data-script=fold]').first.click()
-    page.locator('#lightning').click()
-    expect(page.locator('#script-result')).to_be_visible()
-    click_language(page)
-    expect(page.locator('#script-result')).to_be_visible()
-    expect(page.locator('#script-result')).to_contain_text('演示结果')
-    page.locator('#script-result [data-script=run]').click()
-    expect(page.locator('#script-result')).to_contain_text('Hello, PaperTodo.')
-    page.locator('#script-result [data-script=back]').click()
-    expect(page.locator('#script-editor')).to_be_visible()
-    assert len(page.context.pages) == 1
+def build_motion(p):
+    go(p,'studio');p.locator('[data-recipe="focus"]').click()
+    p.locator('#queue-toggle').click();rest(p)  # success must reveal its new side slot
+    p.locator('#build').click();rest(p,1020)
+    frames=sample(p,lambda:None,'tool-arrival',850)
+    expect(p.locator('#maker')).to_be_hidden();expect(p.locator('[data-capsule="plugin"]')).to_be_visible()
+    assert p.locator('#plugin-paper').is_visible() and p.locator('#todo-paper').is_hidden() and p.locator('#note-paper').is_hidden()
+    assert any(n['id']=='plugin-paper' and n['moving']=='in' for f in frames for n in f['nodes']), 'no moving tool on success'
+    p.locator('[data-capsule="plugin"]').hover();rest(p)
+    p.locator('#live-plugin .widget-actions button').first.click();rest(p,900)
+    p.locator('#preview-open').click();rest(p)
+    p.locator('#plugin-paper [data-action="fold"]').click();rest(p,500)
+    p.evaluate('window.__old=document.querySelector("#live-plugin")')
+    p.locator('#make-again').click();rest(p);p.locator('[data-recipe="converter"]').click();p.locator('#build').click();rest(p,650)
+    assert p.evaluate('__old.isConnected && __activeIntervals.size===1')
+    rest(p,1000);assert p.evaluate('!__old.isConnected && __activeIntervals.size===0')
+    assert p.locator('[data-capsule="plugin"]').count()==1;assert identity(p);assert_bounds(p)
 
-def timer_instances(page):
-    studio_build(page,'Make a 12-minute timer')
-    preview=page.locator('#plugin-preview')
-    expect(preview.locator('.timer-digits')).to_have_text('12:00')
-    preview.get_by_role('button',name='Start',exact=True).click()
-    expect(preview.locator('.timer-digits')).not_to_have_text('12:00',timeout=2500)
-    preview.get_by_role('button',name='Pause',exact=True).click()
-    paused=preview.locator('.timer-digits').inner_text()
-    click_language(page); page.wait_for_timeout(1100)
-    expect(preview.locator('.timer-digits')).to_have_text(paused)
-    expect(page.locator('#prompt')).to_have_value('Make a 12-minute timer')
-    page.locator('#source-tab').click()
-    expect(page.locator('#source-code')).to_contain_text('"minutes":12')
-    page.locator('#preview-tab').click()
-    expect(preview.locator('.timer-digits')).to_have_text(paused)
-    page.locator('#install').click(); page.locator('#install').click()
-    cards=page.locator('.tool-paper')
-    expect(cards).to_have_count(2)
-    cards.nth(0).get_by_role('button',name='开始',exact=True).click()
-    expect(cards.nth(0).locator('.timer-digits')).not_to_have_text('12:00',timeout=2500)
-    expect(cards.nth(1).locator('.timer-digits')).to_have_text('12:00')
-    cards.nth(0).locator('[data-tool-fold]').click()
-    expect(cards.nth(0).locator('.tool-body')).to_be_hidden()
-    cards.nth(0).locator('[data-tool-fold]').click()
-    cards.nth(0).locator('[data-tool-remove]').click()
-    expect(cards).to_have_count(1)
-    preview.get_by_role('button',name='重置',exact=True).click()
-    expect(preview.locator('.timer-digits')).to_have_text('12:00')
+def moved_return(p):
+    h=p.locator('#todo-paper .paper-header').bounding_box()
+    p.mouse.move(h['x']+90,h['y']+15);p.mouse.down();p.mouse.move(h['x']+142,h['y']+75,steps=18);p.mouse.up()
+    original=p.locator('#todo-paper').bounding_box()
+    frames=sample(p,lambda:p.locator('#todo-paper [data-action="fold"]').click(),'moved-fold')
+    cap=p.locator('[data-capsule="todo"]').bounding_box()
+    samples=[(f,n) for f in frames for n in f['nodes'] if n['id']=='todo-paper' and n['moving']=='out']
+    f,n=samples[-1];assert abs(n['x']+f['canvas']['x']-cap['x'])<3 and abs(n['y']+f['canvas']['y']-cap['y'])<3
+    sample(p,lambda:p.locator('[data-capsule="todo"]').click(),'moved-unfold')
+    now=p.locator('#todo-paper').bounding_box();assert abs(now['x']-original['x'])<1 and abs(now['y']-original['y'])<1
+    p.set_viewport_size({'width':1280,'height':720});rest(p,500);assert_bounds(p)
+    p.locator('#todo-paper [data-action="fold"]').click();rest(p,65)
+    p.emulate_media(reduced_motion='reduce');rest(p,80);assert p.locator('[data-moving]').count()==0
+    p.locator('[data-capsule="todo"]').click();rest(p);assert_bounds(p)
 
-def recipes_cancel_export(page):
-    studio_build(page,'Make a habit tracker: Read, Walk')
-    preview=page.locator('#plugin-preview')
-    preview.locator('input[type=checkbox]').first.check()
-    page.emulate_media(reduced_motion='no-preference')
-    page.locator('[data-recipe=focus]').click(); page.locator('#build').click(); page.locator('#cancel-build').click()
-    page.wait_for_timeout(850)
-    expect(preview.locator('input[type=checkbox]').first).to_be_checked()
-    expect(page.locator('#build-status')).to_contain_text('Cancelled')
-    page.emulate_media(reduced_motion='reduce')
-    payload='Make a checklist: <img src=x onerror=alert(1)>, Keep me'
-    page.locator('#prompt').fill(payload); page.locator('#build').click()
-    expect(page.locator('#pipeline')).to_have_attribute('aria-busy','false')
-    expect(preview.locator('input[type=checkbox]')).to_have_count(2)
-    assert preview.locator('img').count() == 0
-    preview.locator('input[type=checkbox]').first.check()
-    add=preview.locator('form input'); add.fill('My custom 新任务'); add.press('Enter')
-    expect(preview.locator('input[type=checkbox]')).to_have_count(3)
-    click_language(page)
-    expect(preview).to_contain_text('My custom 新任务')
-    expect(preview.locator('input[type=checkbox]').first).to_be_checked()
-    expect(page.locator('#prompt')).to_have_value(payload)
-    page.locator('#source-tab').click(); source=page.locator('#source-code').inner_text()
-    assert '<img src=x onerror=' not in source
-    with page.expect_download() as download_info:
-        page.locator('#download-demo').click()
-    saved=EVIDENCE/'exported-checklist.html'; download_info.value.save_as(str(saved))
-    assert saved.read_text() == source
-    exported=page.context.new_page(); exported.set_content(source,wait_until='domcontentloaded')
-    expect(exported.locator('input[type=checkbox]')).to_have_count(2)
-    exported.locator('input[type=checkbox]').first.check()
-    expect(exported.locator('input[type=checkbox]').first).to_be_checked()
-    assert exported.locator('img').count()==0
-    exported.close()
+def scrolling(p):
+    seen=[];p.mouse.move(560,350)
+    for chapter in ['capsules','markdown','scripts','studio','scripts','markdown','capsules','overview']:
+        box=p.locator('#'+chapter).bounding_box()
+        p.mouse.wheel(0,box['y']-p.viewport_size['height']*.4)
+        rest(p,650);expect(p.locator('#desktop-scene')).to_have_attribute('data-chapter',chapter)
+        seen.append(chapter);assert identity(p)
+    assert seen[-1]=='overview'
+    expect(p.locator('#todo-paper')).to_be_visible();expect(p.locator('#note-paper')).to_be_visible()
 
-def auto_lifecycle(page):
-    page.emulate_media(reduced_motion='no-preference')
-    visit(page,'markdown')
-    before=page.locator('[data-mode][aria-pressed=true]').get_attribute('data-mode')
-    page.wait_for_timeout(2450)
-    after=page.locator('[data-mode][aria-pressed=true]').get_attribute('data-mode')
-    assert before != after
-    page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,get:()=>true}); document.dispatchEvent(new Event('visibilitychange'))")
-    page.wait_for_timeout(2500)
-    assert page.locator('[data-mode][aria-pressed=true]').get_attribute('data-mode') == after
-    page.evaluate("delete document.hidden; document.dispatchEvent(new Event('visibilitychange'))")
-    page.locator('[data-mode=full]').click()
-    visit(page,'capsules'); visit(page,'markdown'); page.wait_for_timeout(2450)
-    expect(page.locator('[data-mode=full]')).to_have_attribute('aria-pressed','true')
-    expect(page.locator('#desktop-scene [data-action=auto]')).to_have_attribute('aria-pressed','false')
+def layout(p):
+    initial(p);h=p.locator('#desktop-scene').bounding_box()['height']
+    for c in ['capsules','markdown','scripts','studio']:
+        go(p,c);assert_bounds(p);assert abs(p.locator('#desktop-scene').bounding_box()['height']-h)<1
+    make(p);assert_bounds(p)
+    for loc in p.locator('.capsule-title').all():
+        assert loc.is_visible() and loc.inner_text();assert loc.evaluate('n=>getComputedStyle(n).opacity')=='1'
+    p.locator('[data-capsule="plugin"]').focus();p.keyboard.press('ArrowLeft');rest(p);assert_bounds(p)
+    p.locator('#preview-open').click();rest(p);assert_bounds(p)
+    p.locator('#plugin-paper [data-action="fold"]').click();rest(p);p.locator('#language').click();rest(p);assert_bounds(p)
+    assert p.locator('[data-capsule="plugin"] .capsule-title').inner_text()==p.locator('#tool-title').inner_text()
 
-def native_themes_and_pin(page):
-    scene=page.locator('#desktop-scene')
-    click(scene,'pin','todo')
-    expect(scene.locator('[data-id=todo]')).to_have_attribute('data-pinned','true')
-    expect(scene.locator('[data-action=pin][data-paper=todo]')).to_have_attribute('aria-pressed','true')
-    # Bringing a normal note forward must not put it above the pinned paper.
-    scene.locator('[data-title=note]').fill('A normal note')
-    todo_z=scene.locator('[data-id=todo]').evaluate('n=>Number(getComputedStyle(n).zIndex)')
-    note_z=scene.locator('[data-id=note]').evaluate('n=>Number(getComputedStyle(n).zIndex)')
-    assert todo_z>note_z
-    expected={'warm':['rgb(255, 249, 234)','rgb(33, 31, 28)'], 'ink':['rgb(246, 247, 249)','rgb(26, 28, 32)'], 'forest':['rgb(243, 248, 241)','rgb(26, 30, 27)'], 'rose':['rgb(253, 245, 246)','rgb(33, 28, 30)']}
-    for palette, values in expected.items():
-        scene.locator(f'[data-palette-select={palette}]').click()
-        for dark, expected_bg in enumerate(values):
-            if scene.get_attribute('data-dark')!=str(bool(dark)).lower(): click(scene,'theme')
-            color=scene.locator('[data-id=todo]').evaluate('n=>getComputedStyle(n).backgroundColor')
-            assert color==expected_bg,(palette,dark,color)
-            assert page.locator('.themed').evaluate_all('(nodes)=>nodes.every(n=>n.dataset.palette===nodes[0].dataset.palette && n.dataset.dark===nodes[0].dataset.dark)')
-    click_language(page)
-    expect(scene.locator('[data-id=todo]')).to_have_attribute('data-pinned','true')
-    click(scene,'pin','todo')
-    expect(scene.locator('[data-id=todo]')).to_have_attribute('data-pinned','false')
+def long_press(p,loc):
+    loc.scroll_into_view_if_needed();r=loc.bounding_box();x=r['x']+30;y=r['y']+r['height']/2
+    cd=p.context.new_cdp_session(p)
+    cd.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x,'y':y}]});rest(p,500)
+    cd.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]});cd.detach();rest(p,850)
 
-def fold_targets_and_interrupts(page):
-    scene=page.locator('#desktop-scene')
-    # Test the destination rather than relying only on a screenshot of an animation.
-    page.emulate_media(reduced_motion='no-preference')
-    grip=scene.locator('[data-drag=todo]'); grip.focus(); page.keyboard.press('Shift+ArrowRight')
-    click(scene,'fold','todo')
-    metrics=page.evaluate("""() => {
-      const ghost=document.querySelector('.motion-ghost');
-      if(!ghost)return null;
-      const frames=ghost.getAnimations()[0].effect.getKeyframes();
-      const matrix=new DOMMatrix(frames.at(-1).transform);
-      const to=document.querySelector('#desktop-scene [data-capsule=todo]').getBoundingClientRect();
-      return {x:parseFloat(ghost.style.left)+matrix.e,y:parseFloat(ghost.style.top)+matrix.f,w:parseFloat(ghost.style.width)*matrix.a,h:parseFloat(ghost.style.height)*matrix.d,tx:to.left,ty:to.top,tw:to.width,th:to.height};
-    }""")
-    assert metrics is not None,'The fold should have a live animation.'
-    for name,target in [('x','tx'),('y','ty'),('w','tw'),('h','th')]: assert abs(metrics[name]-metrics[target])<1,(name,metrics)
-    page.set_viewport_size({'width':1280,'height':1000})
-    expect(page.locator('.motion-ghost')).to_have_count(0)
-    page.emulate_media(reduced_motion='reduce')
-    for _ in range(4):
-        scene.locator('[data-capsule=todo]').focus(); page.keyboard.press('Enter')
-        click(scene,'open','todo'); click(scene,'fold','todo')
-    scene.locator('[data-capsule=todo]').focus(); page.keyboard.press('Enter'); click(scene,'open','todo')
-    expect(scene.locator('[data-id=todo]')).to_be_visible()
-    page.set_viewport_size({'width':1024,'height':1000})
-    bounds=scene.locator('[data-id=todo]').bounding_box(); canvas=scene.locator('.scene-canvas').bounding_box()
-    assert bounds['x']>=canvas['x'] and bounds['x']+bounds['width']<=canvas['x']+canvas['width']+1
-    assert bounds['y']>=canvas['y'] and bounds['y']+bounds['height']<=canvas['y']+canvas['height']+1
-    expect(page.locator('.motion-ghost')).to_have_count(0)
+def resize_contract(p):
+    paper=p.locator('#todo-paper');before=paper.bounding_box();r=paper.locator('[data-resize="se"]').bounding_box()
+    font=paper.locator('.task-text').first.evaluate('n=>getComputedStyle(n).fontSize')
+    p.mouse.move(r['x']+r['width']/2,r['y']+r['height']/2);p.mouse.down();p.mouse.move(r['x']+r['width']/2+74,r['y']+r['height']/2+64,steps=14);p.mouse.up()
+    grown=paper.bounding_box();assert grown['width']>=before['width']+70 and grown['height']>=before['height']+60,(before,grown)
+    assert paper.locator('.task-text').first.evaluate('n=>getComputedStyle(n).fontSize')==font
+    paper.locator('[data-resize="se"]').focus();p.keyboard.press('ArrowLeft');p.keyboard.press('ArrowUp');sized=paper.bounding_box()
+    assert abs(sized['width']-grown['width']+8)<1 and abs(sized['height']-grown['height']+8)<1
+    # Cancel a resize restores the last committed size, not the initial size.
+    r=paper.locator('[data-resize="se"]').bounding_box();p.mouse.move(r['x']+10,r['y']+10);p.mouse.down();p.mouse.move(r['x']+40,r['y']+40,steps=5);p.keyboard.press('Escape');p.mouse.up()
+    assert abs(paper.bounding_box()['width']-sized['width'])<1
+    paper.locator('[data-action="fold"]').click();rest(p);p.locator('[data-capsule="todo"]').click();rest(p,1100)
+    assert abs(paper.bounding_box()['width']-sized['width'])<1
+    go(p,'markdown');go(p,'overview');p.locator('#language').click();rest(p)
+    assert abs(paper.bounding_box()['width']-sized['width'])<1
+    p.set_viewport_size({'width':1280,'height':720});rest(p);assert_bounds(p)
+    p.set_viewport_size({'width':1440,'height':900});rest(p);assert abs(paper.bounding_box()['width']-sized['width'])<1
+    # Real border resizing, bounded at the local workbench edge.
+    r=paper.locator('[data-resize="e"]').bounding_box();p.mouse.move(r['x']+2,r['y']+12);p.mouse.down();p.mouse.move(1430,r['y']+12,steps=8);p.mouse.up();assert_bounds(p)
 
-def responsive(page, width, lang):
-    assert page.evaluate('document.documentElement.scrollWidth') <= width+1
-    assert page.locator('html').get_attribute('lang') == ('zh-CN' if lang=='zh' else 'en')
-    if width<781:
-        page.locator('#menu-toggle').click()
-        expect(page.locator('#navigation')).to_be_visible()
-        page.keyboard.press('Escape')
-        expect(page.locator('#navigation')).not_to_be_visible()
-    visit(page,'capsules'); page.locator('[data-action=preview-todo]').click()
-    scene=page.locator('#desktop-scene' if width>=960 else '[data-scene=capsules]')
-    expect(scene.locator('.preview-card')).to_be_visible()
-    box=scene.locator('.preview-card').bounding_box(); assert box['x']>=0 and box['x']+box['width']<=width+1
-    visit(page,'markdown'); page.locator('[data-mode=full]').click()
-    md=page.locator('#desktop-scene' if width>=960 else '[data-scene=markdown]')
-    md.locator('[data-id=note]').scroll_into_view_if_needed()
-    # Check that the folded queue cannot cover the reading toolbar.
-    assert not md.locator('.capsule-rail').is_visible()
-    for b in md.locator('[data-id=note] .paper-header button:visible').all():
-        box=b.bounding_box(); parent=md.locator('[data-id=note]').bounding_box()
-        assert box['x']+box['width']<=parent['x']+parent['width']+1
-    visit(page,'scripts'); page.locator('#script-editor [data-script=fold]').first.click(); page.locator('#lightning').click()
-    expect(page.locator('#script-result')).to_be_visible()
-    studio_build(page)
-    expect(page.locator('#plugin-preview .timer-digits')).to_have_text('25:00')
-    page.locator('#install').click()
-    expect(page.locator('.tool-paper')).to_have_count(1)
-    page.locator('#faq summary').first.click()
-    expect(page.locator('#faq details').first).to_have_attribute('open','')
-    assert page.evaluate('document.documentElement.scrollWidth')<=width+1
-    if width>=960:
-        cols=page.locator('.feature-grid').evaluate('n=>getComputedStyle(n).gridTemplateColumns.split(" ").length')
-        assert cols==2
-    assert page.locator('#features article').count()==6 and page.locator('#faq details').count()==5
-    for a in page.locator('a[href^="#"]').all():
-        href=a.get_attribute('href')
-        if href!='#': assert page.locator(href).count()==1,href
+def sidebar_routes(p):
+    ids=['todo','maker','script'];assert p.locator('[data-capsule]').evaluate_all('(ns)=>ns.map(n=>n.dataset.capsule)')==ids
+    assert p.locator('.master-capsule').count()==0
+    p.locator('#todo-body .task-link').click();rest(p);expect(p.locator('#note-paper')).to_be_visible()
+    p.locator('[data-capsule="maker"]').click();rest(p,1100);expect(p.locator('#maker')).to_be_visible();assert p.locator('#maker textarea').count()==0
+    p.locator('[data-capsule="script"]').click();rest(p,1100);expect(p.locator('#script-editor')).to_be_visible();expect(p.locator('#desktop-scene')).to_have_attribute('data-chapter','scripts')
+    p.locator('[data-capsule="todo"]').click();rest(p,1100);expect(p.locator('#todo-paper')).to_be_visible()
+    make(p);assert p.locator('[data-capsule]').count()==4
+    p.evaluate('window.__firstTool=document.querySelector("#live-plugin")')
+    p.locator('[data-capsule="maker"]').click();rest(p,1100);expect(p.locator('#maker')).to_be_visible();make(p,'habits')
+    assert p.locator('[data-capsule]').count()==4 and p.locator('#live-plugin').count()==1 and p.evaluate('!__firstTool.isConnected')
+    assert identity(p)
 
-CASES=[('native palette values, complete themes and canvas pin semantics',native_themes_and_pin),('fold targets after movement, resize interruption and repeated actions',fold_targets_and_interrupts),('session state across language, chapters and resize',state_persistence),('interactive preview, keyboard recovery and queue operations',capsule_preview_queue),('Markdown levels and external editor explanation',markdown_modes),('pointer/keyboard dragging, limits and reset consent',drag_add_reset),('script folding, replay and return without execution',script_flow),('timer controls and independent canvas instances',timer_instances),('templates, cancellation, custom text and actual export',recipes_cancel_export),('auto-demo lifecycle gates (synthetic visibility event)',auto_lifecycle)]
+def script_play(p):
+    run=p.locator('#lightning');assert run.evaluate('n=>n.closest("[data-edge-slot]").dataset.edgeSlot')=='script'
+    run.click();expect(p.locator('#desktop-scene')).to_have_attribute('data-chapter','scripts')
+    expect(p.locator('#script-result')).to_have_attribute('data-running','true')
+    expect(run).to_be_disabled();expect(p.locator('#script-output')).to_have_text('Running…')
+    rest(p,1000);expect(p.locator('#script-output')).to_have_text('Hello, PaperTodo.');expect(run).to_be_enabled()
+    assert p.locator('#script-result [data-script="run"]').count()==0
+    p.locator('#script-result [data-script="back"]').click();rest(p)
+    p.locator('#script-editor .paper-header [data-script="run"]').click();rest(p,950)
+    expect(p.locator('#script-result')).to_have_attribute('data-running','false');assert p.locator('[data-capsule]').count()==3
+    p.locator('#script-result [data-script="close"]').click();rest(p);expect(p.locator('#script-result')).to_be_hidden()
+    expect(p.locator('#script-editor')).to_be_hidden();expect(run).to_be_visible();assert p.locator('.script-capsule-stage').count()==0
 
-def main():
-    global BASE
-    group = sys.argv[sys.argv.index('--group')+1] if '--group' in sys.argv else 'all'
-    if group == 'all':
-        # Fresh browser processes bound font/cache memory and isolate each test batch.
-        for batch in ['interactions','layout-en','layout-zh']:
-            result = subprocess.run([sys.executable,__file__,'--group',batch],check=False)
-            if result.returncode: return result.returncode
-        reports=[json.loads((EVIDENCE/f"browser-{'dom' if MODE else 'http'}-{batch}.json").read_text()) for batch in ['interactions','layout-en','layout-zh']]
-        combined=dict(reports[0]); combined['results']=[r for report in reports for r in report['results']]; combined['passed']=sum(r['passed'] for r in reports); combined['total']=sum(r['total'] for r in reports)
-        (EVIDENCE/f"browser-{'dom' if MODE else 'http'}.json").write_text(json.dumps(combined,ensure_ascii=False,indent=2)); print(json.dumps({k:v for k,v in combined.items() if k!='results'},indent=2)); return 0
-    with server() as BASE, sync_playwright() as p:
-        executable=os.environ.get('CHROMIUM_PATH') or shutil.which('chromium')
-        browser=p.chromium.launch(executable_path=executable, args=['--no-sandbox'] if os.geteuid()==0 else []) if hasattr(os,'geteuid') else p.chromium.launch(executable_path=executable)
-        version=browser.version
-        # Fail explicitly rather than quietly substituting DOM mode for an HTTP failure.
-        probe=browser.new_page()
-        try:
-            load_page(probe,base_url=BASE)
-            if not MODE:
-                load_page(probe,'zh',BASE+'nested/test/')
-                expect(probe.locator('html')).to_have_attribute('lang','zh-CN')
-        except Exception as error:
-            report={'mode':'DOM_ONLY' if MODE else 'HTTP','browser':version,'status':'BLOCKED_OR_LOAD_FAILED','error':str(error),'passed':0}
-            (EVIDENCE/'browser-http.json').write_text(json.dumps(report,indent=2))
-            print(json.dumps(report,indent=2)); browser.close(); return 2
-        probe.close()
-        cases=CASES+[(f'layout and key flows {width}px {lang}',lambda pg,w=width,l=lang:responsive(pg,w,l),width,lang) for width in [320,390,430,768,1024,1440,1920] for lang in ['en','zh']]
-        # A short desktop window reflows to readable mobile scenes instead of clipping the sticky stage.
-        cases += [('short-height desktop, effective zoom reflow',lambda pg:responsive(pg,720,'en'),720,'en',450)]
-        if group == 'interactions': cases=cases[:len(CASES)]
-        elif group in ['layout-en','layout-zh']: cases=[case for case in cases[len(CASES):] if len(case)>3 and case[3]==group[-2:]]
-        else: raise ValueError('Unknown group: '+group)
+def linked_note_state(p):
+    b=p.locator('#note-body [data-md-check]').nth(1);b.check()
+    linked(p);expect(p.locator('#note-body [data-md-check]').nth(1)).to_be_checked()
+    go(p,'markdown');p.locator('[data-mode="full"]').click();expect(p.locator('#note-body [data-md-check]').nth(1)).to_be_checked()
+    assert p.locator('[data-capsule="note"]').count()==0;assert identity(p)
+
+def resize_motion(p):
+    paper=p.locator('#todo-paper');r=paper.locator('[data-resize="se"]').bounding_box()
+    p.mouse.move(r['x']+10,r['y']+10);p.mouse.down()
+    def action():
+        p.mouse.move(r['x']+90,r['y']+80,steps=22);p.mouse.up()
+    frames=sample(p,action,'resize-drag',500)
+    sizes=[n['w'] for f in frames for n in f['nodes'] if n['id']=='todo-paper'];assert max(sizes)-min(sizes)>60 and len(set(round(x) for x in sizes))>=5
+    paper.locator('[data-action="fold"]').click();rest(p);sample(p,lambda:p.locator('[data-capsule="todo"]').click(),'resized-return',800)
+    assert abs(paper.bounding_box()['width']-380)<2
+
+
+def resize_remaining_papers(p):
+    def shrink(selector):
+        node=p.locator(selector);expect(node).to_be_visible();grip=node.locator('[data-resize="se"]');r=grip.bounding_box();before=node.bounding_box()
+        x=r['x']+r['width']/2;y=r['y']+r['height']/2
+        p.mouse.move(x,y);p.mouse.down();p.mouse.move(x-30,y-24,steps=9);p.mouse.up();after=node.bounding_box()
+        assert abs(before['width']-after['width']-30)<1 and abs(before['height']-after['height']-24)<1,(selector,before,after)
+        assert_bounds(p)
+    shrink('#note-paper');go(p,'scripts');shrink('#script-editor');make(p);desktop(p);shrink('#plugin-paper')
+    p.evaluate('window.__resizedTool=document.querySelector("#live-plugin")')
+    p.locator('#plugin-paper [data-action="fold"]').click();rest(p);p.locator('[data-capsule="plugin"]').click();rest(p)
+    assert p.evaluate('__resizedTool===document.querySelector("#live-plugin")')
+
+def touch_resize(p):
+    node=p.locator('#todo-paper');grip=node.locator('[data-resize="se"]');grip.scroll_into_view_if_needed();r=grip.bounding_box();before=node.bounding_box();scroll=p.evaluate('scrollY')
+    x=r['x']+r['width']/2;y=r['y']+r['height']/2;cd=p.context.new_cdp_session(p)
+    cd.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x,'y':y}]})
+    for delta in [8,16,24,32]:cd.send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':x-delta,'y':y-delta}]})
+    cd.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]});cd.detach()
+    after=node.bounding_box();assert abs(before['width']-after['width']-32)<1 and abs(before['height']-after['height']-32)<1,(before,after)
+    assert abs(p.evaluate('scrollY')-scroll)<1,'Resizing must not scroll the page'
+    node.locator('[data-action="fold"]').tap();rest(p);p.locator('[data-capsule="todo"]').tap();rest(p)
+    assert abs(node.bounding_box()['width']-after['width'])<1;assert_bounds(p)
+
+def script_effect_motion(p):
+    run=p.locator('#lightning');p.evaluate(FRAME_PROBE);run.click();rest(p,250)
+    expect(p.locator('#script-result')).to_have_attribute('data-running','true');expect(run).to_be_disabled()
+    assert p.locator('#script-output').inner_text()!='Hello, PaperTodo.'
+    p.screenshot(path=str(EVIDENCE/'script-running.png'));rest(p,700)
+    expect(p.locator('#script-result')).to_have_attribute('data-running','false');expect(run).to_be_enabled()
+    expect(p.locator('#script-output')).to_have_text('Hello, PaperTodo.');p.screenshot(path=str(EVIDENCE/'script-complete.png'))
+    frames=p.evaluate('__frames');(EVIDENCE/'frames').mkdir(exist_ok=True);(EVIDENCE/'frames'/'script-running-result.json').write_text(json.dumps(frames,indent=1))
+    assert len(frames)>10;run.click();rest(p,80);expect(run).to_be_disabled();rest(p,850)
+    expect(p.locator('#script-output')).to_have_text('Hello, PaperTodo.');assert identity(p);assert_bounds(p)
+
+def markdown_geometry(p):
+    normal=p.locator('#note-paper').bounding_box()
+    go(p,'markdown');expanded=p.locator('#note-paper').bounding_box()
+    assert expanded['width']>normal['width'] and expanded['height']>normal['height']
+    go(p,'overview');restored=p.locator('#note-paper').bounding_box()
+    assert abs(restored['width']-normal['width'])<1 and abs(restored['height']-normal['height'])<1
+    go(p,'markdown');p.locator('#note-paper .paper-resize').press('ArrowRight');rest(p)
+    manual=p.locator('#note-paper').bounding_box()
+    expect(p.locator('#note-paper')).to_have_attribute('data-layout','manual')
+    for chapter in ['capsules','markdown','overview']:
+        go(p,chapter);current=p.locator('#note-paper').bounding_box()
+        assert abs(current['width']-manual['width'])<1 and abs(current['height']-manual['height'])<1
+
+
+def snap_exit(p):
+    go(p,'studio');p.mouse.move(280,450);p.mouse.wheel(0,900);rest(p,800)
+    assert p.evaluate('getComputedStyle(document.documentElement).scrollSnapType')=='none'
+    before=p.evaluate('scrollY');p.mouse.wheel(0,220);rest(p,500)
+    delta=p.evaluate('scrollY')-before
+    assert 100<delta<300,delta
+    go(p,'overview')
+    assert p.evaluate('getComputedStyle(document.documentElement).scrollSnapType')=='y mandatory'
+
+
+SCENARIOS=[('markdown-auto-manual-geometry',markdown_geometry),('snap-exit',snap_exit),('resize-other-papers',resize_remaining_papers),('resize-contract',resize_contract),('sidebar-routes',sidebar_routes),('script-direct-run',script_play),('linked-note-state',linked_note_state),('initial',initial),('linked-note',linked),('hover-actions',preview),('title-drag',dragging),('persistent-queue',queue),('markdown-state',markdown),('script-sequence',scripts),('live-tool-portals',tool),('transactional-replace',replace),('preset-only',preset_only),('keyboard-reduced-motion',keyboard)]
+MOTIONS=[('script-effect-motion',script_effect_motion),('resize-motion',resize_motion),('continuous-surfaces',motion_case),('queue-transfers',transfer),('rapid-reversal',interruption),('build-and-replace-motion',build_motion),('dragged-fold-return',moved_return),('ordinary-reverse-scroll',scrolling)]
+def run(group='all',record=False,selected=''):
+    cases=[]
+    if group in ['all','interaction']:
+        cases += [(n,fn,(1440,900),'en',False,False,'') for n,fn in SCENARIOS]
+        cases += [('touch-phone',touch,(390,844),'zh',True,False,''),('touch-resize',touch_resize,(390,844),'zh',True,False,'')]
+    if group in ['all','motion']:cases += [(n,fn,(1440,900),'zh',False,True,'') for n,fn in MOTIONS]
+    if group in ['all','layout']:
+        for size in [(1440,900),(1366,768),(1280,720),(390,844),(320,568),(768,1024),(1024,768)]:
+            for lang in ['en','zh']:cases.append((f'layout-{size[0]}x{size[1]}-{lang}',layout,size,lang,False,False,''))
+    if group in ['all','http']:
+        cases += [('root-HTTP',initial,(1440,900),'en',False,False,''),('nested-HTTP',initial,(1280,720),'zh',False,False,'nested/test/')]
+    if selected:cases=[c for c in cases if c[0] in selected.split(',')]
+    if MODE and group=='http':raise RuntimeError('HTTP group cannot use DOM fixture')
+    if MODE:cases=[c for c in cases if 'HTTP' not in c[0]]
+    report={'mode':'DOM_ONLY' if MODE else 'HTTP','group':group,'results':[],'limitations':['DOM fixture: no homepage HTTP/module-fetch/CSP acceptance'] if MODE else []}
+    if not selected and len(cases)>1:
         for case in cases:
-            print('RUN',case[0],time.strftime('%H:%M:%S'),flush=True)
-            name,run=case[:2]; width=case[2] if len(case)>2 else 1440; lang=case[3] if len(case)>3 else 'en'; height=case[4] if len(case)>4 else 1000 if width>=960 else 844
-            context=browser.new_context(viewport={'width':width,'height':height},has_touch=width<960,reduced_motion='reduce',accept_downloads=True)
-            page=context.new_page(); errors=[]; page.on('pageerror',lambda error:errors.append(str(error)))
-            page.set_default_timeout(5000)
+            args=[sys.executable,__file__,'--group',group,'--case',case[0]]+(['--record'] if record else [])
+            result=subprocess.run(args,cwd=ROOT,timeout=60)
+            child=EVIDENCE/f'browser-{report["mode"].lower()}-{group}-{case[0]}.json'
+            if child.exists():
+                part=json.loads(child.read_text());report['results'].extend(part['results']);report['browser']=part.get('browser')
+            else:report['results'].append({'name':case[0],'status':'FAIL','error':'Child test did not produce a report'})
+            if result.returncode:break
+        report.update(passed=sum(r['status']=='PASS' for r in report['results']),failed=sum(r['status']=='FAIL' for r in report['results']),planned=len(cases))
+        (EVIDENCE/f'browser-{report["mode"].lower()}-{group}.json').write_text(json.dumps(report,indent=2,ensure_ascii=False))
+        print('TOTAL',json.dumps({k:report[k] for k in ['passed','failed','planned']}),flush=True)
+        return 1 if report['failed'] else 0
+    with server() as base,sync_playwright() as pw:
+        for name,fn,size,lang,touch_mode,normal,suffix in cases:
+            browser=launch(pw);report['browser']=browser.version
+            errors=[];responses=[];start=time.monotonic()
+            options=dict(viewport={'width':size[0],'height':size[1]},has_touch=touch_mode,is_mobile=touch_mode,reduced_motion='no-preference' if normal else 'reduce',accept_downloads=True)
+            if record and normal:options.update(record_video_dir=str(EVIDENCE/'videos'),record_video_size={'width':size[0],'height':size[1]})
+            c=browser.new_context(**options);c.add_init_script(INTERVAL_PROBE);p=c.new_page();p.set_default_timeout(7000)
+            p.on('pageerror',lambda e:errors.append(str(e)));p.on('response',lambda r:responses.append({'url':r.url,'status':r.status}))
             try:
-                load_page(page,lang,BASE); run(page)
-                assert not errors,errors
-                RESULTS.append({'name':name,'status':'PASS'})
-                print('PASS',name,flush=True)
+                if MODE:p.evaluate(INTERVAL_PROBE)
+                load_page(p,lang,base+suffix);rest(p,80)
+                p.evaluate('window.__original=[document.querySelector("#desktop-scene"),document.querySelector("#todo-paper"),document.querySelector("#note-paper")]')
+                fn(p);assert not errors,errors
+                if not MODE:
+                    for path in ['playground.mjs','motion.mjs','story-core.mjs','plugin-core.mjs','copy.mjs','playground.css']:
+                        assert any(r['url'].endswith(path) and r['status']==200 for r in responses),(path,responses)
+                row={'name':name,'status':'PASS','seconds':round(time.monotonic()-start,2),'normal_motion':normal}
             except Exception as error:
-                RESULTS.append({'name':name,'status':'FAIL','error':str(error),'traceback':traceback.format_exc(),'console_errors':errors})
-                print('FAIL',name,traceback.format_exc(),flush=True)
-                try: page.screenshot(path=str(EVIDENCE/f'failure-{len(RESULTS)}.png'),timeout=5000)
-                except Exception: pass
-            finally:
-                context.close()
-        browser.close()
-    report={'mode':'DOM_ONLY' if MODE else 'HTTP','browser':version,'http_module_loading':'NOT_TESTED' if MODE else 'PASS_ROOT_AND_SUBPATH','status':'PASS' if all(r['status']=='PASS' for r in RESULTS) else 'FAIL','passed':sum(r['status']=='PASS' for r in RESULTS),'total':len(RESULTS),'results':RESULTS}
-    (EVIDENCE/f"browser-{'dom' if MODE else 'http'}-{group}.json").write_text(json.dumps(report,ensure_ascii=False,indent=2))
-    print(json.dumps({k:v for k,v in report.items() if k!='results'},indent=2))
-    return 0 if report['status']=='PASS' else 1
-
+                row={'name':name,'status':'FAIL','error':str(error),'console_errors':errors,'traceback':traceback.format_exc()}
+                try:p.screenshot(path=str(EVIDENCE/f'failure-{name}.png'))
+                except Exception:pass
+            video=p.video;c.close()
+            if video:row['video']=str(Path(video.path()).relative_to(ROOT))
+            browser.close()
+            report['results'].append(row);print(name,row['status'],row.get('error','')[:200],flush=True)
+            if row['status']=='FAIL':break
+    report.update(passed=sum(r['status']=='PASS' for r in report['results']),failed=sum(r['status']=='FAIL' for r in report['results']),planned=len(cases))
+    path=EVIDENCE/f'browser-{report["mode"].lower()}-{group}{"-"+selected.replace(",","_") if selected else ""}.json';path.write_text(json.dumps(report,indent=2,ensure_ascii=False));print(json.dumps({k:report[k] for k in ['passed','failed','planned']}))
+    return 1 if report['failed'] else 0
 if __name__=='__main__':
-    sys.exit(main())
+    parser=argparse.ArgumentParser();parser.add_argument('--group',choices=['all','interaction','layout','motion','http'],default='all');parser.add_argument('--record',action='store_true');parser.add_argument('--case',default='');a=parser.parse_args();raise SystemExit(run(a.group,a.record,a.case))

@@ -21,15 +21,24 @@ jobs:
       - name: Unit and syntax checks
         run: |
           node --test tests/*.test.mjs
+          node --experimental-vm-modules scripts/check-modules.mjs
           for file in website/assets/*.mjs scripts/*.mjs; do node --check "$file"; done
       - name: Install the test browser
         run: |
           python -m pip install playwright==1.57.0 Pillow==12.3.0
-          python -m playwright install --with-deps chromium
+          python -m playwright install --with-deps chromium ffmpeg
+      - name: Verify HTTP asset bytes at root and repository subpath
+        run: python tests/http_assets.py
       - name: Real HTTP browser checks, including repository subpath
-        run: python tests/browser_smoke.py
+        run: python tests/browser_smoke.py --record
+      - name: Visual proportions, copy and accessible controls
+        run: python tests/visual_smoke.py
       - name: Capture final interface in both languages
         run: python tests/capture.py
+      - name: Build and verify the standalone preview
+        run: |
+          python scripts/build-preview.py
+          python tests/preview_smoke.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -37,5 +46,5 @@ jobs:
           path: evidence/
       - uses: actions/upload-artifact@v4
         with:
-          name: papertodo-fusion-website
+          name: papertodo-workbench-website
           path: website/

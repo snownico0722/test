@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Script} from 'node:vm';
 import {readFileSync} from 'node:fs';
-import {recipes, planFromPrompt, exportPlugin, escapeHTML, resolveLanguage} from '../website/assets/plugin-core.mjs';
+import {recipes, planFromPrompt, exportPlugin, escapeHTML, resolveLanguage, convertUnits} from '../website/assets/plugin-core.mjs';
 
 for (const [type, translations] of Object.entries(recipes)) {
   for (const [language, prompt] of Object.entries(translations)) {
@@ -29,9 +29,9 @@ test('empty, oversized, and unknown ideas are not presented as AI generations', 
   assert.equal(planFromPrompt('make a weather radar').error, 'unsupported');
 });
 test('explicit list items support Chinese punctuation and bounded lengths', () => {
-  assert.deepEqual(planFromPrompt('清单：写文案，录演示；发布作品。').config.items, ['写文案', '录演示', '发布作品']);
-  assert.equal(planFromPrompt('checklist: ' + Array(10).fill('task').join(',')).config.items.length, 6);
-  assert.equal(planFromPrompt('checklist: ' + 'x'.repeat(100)).config.items[0].length, 80);
+  assert.deepEqual(planFromPrompt('习惯：写文案，录演示；发布作品。').config.items, ['写文案', '录演示', '发布作品']);
+  assert.equal(planFromPrompt('habits: ' + Array(10).fill('task').join(',')).config.items.length, 6);
+  assert.equal(planFromPrompt('habits: ' + 'x'.repeat(100)).config.items[0].length, 80);
 });
 test('URL language wins; invalid or unavailable preferences fall back safely', () => {
   assert.equal(resolveLanguage('en', 'zh'), 'en');
@@ -45,7 +45,7 @@ test('HTML escaping covers markup and quotes', () => {
 });
 test('export escapes script terminators and preserves data after JSON parsing', () => {
   const payload = '</script><img src=x onerror=alert(1)>\u2028\u2029';
-  const config = {type: 'checklist', minutes: 25, items: [payload]};
+  const config = {type: 'habits', minutes: 25, items: [payload]};
   const html = exportPlugin(config, 'zh');
   const json = html.match(/<script type="application\/json" id="config">([\s\S]*?)<\/script>/)[1];
   assert.ok(!json.includes('<'));
@@ -67,10 +67,25 @@ for (const type of Object.keys(recipes)) {
 }
 test('landing has relative assets, a static fallback, and no live model claim', () => {
   const html = readFileSync(new URL('../website/index.html', import.meta.url), 'utf8');
-  assert.ok(html.includes('href="classic.html"'));
+  assert.ok(!html.includes('/website/classic.html'));
   assert.ok(html.includes('<noscript>'));
-  assert.ok(html.includes('SIMULATION'));
+  assert.ok(html.includes('no live Codex call'));
   assert.ok(html.includes("connect-src 'none'"));
   assert.ok(html.includes('assets/playground.mjs'));
   assert.ok(!html.includes('softwareVersion'));
+});
+
+
+test('unit conversion uses exact SI definitions and temperature offsets',()=>{
+  const close=(actual,expected)=>assert.ok(Math.abs(actual-expected)<1e-9,`${actual} != ${expected}`);
+  close(convertUnits(0.3048,'length'),1);close(convertUnits(1,'length',true),0.3048);
+  close(convertUnits(0.45359237,'weight'),1);close(convertUnits(1,'weight',true),0.45359237);
+  close(convertUnits(0,'temperature'),32);close(convertUnits(212,'temperature',true),100);
+  close(convertUnits(-40,'temperature'),-40);
+  for(const kind of ['length','temperature','weight'])for(const value of [-12.3,0,1,1000])close(convertUnits(convertUnits(value,kind),kind,true),value);
+});
+test('invalid conversion inputs never produce NaN or infinite display values',()=>{
+  for(const value of ['', ' ', null, undefined, 'abc', Infinity, NaN])assert.equal(convertUnits(value),null);
+  assert.equal(convertUnits(1,'unknown'),null);assert.equal(convertUnits(Number.MAX_VALUE,'length'),null);
+  assert.equal(convertUnits('0','temperature'),32);
 });

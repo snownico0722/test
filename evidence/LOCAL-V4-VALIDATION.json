@@ -1,0 +1,105 @@
+{
+  "date": "2026-09-18",
+  "revision": 4,
+  "baseline_archive": "papertodo-compact-v3-source.zip",
+  "baseline_sha256": "806f2e5b7b29d019750a8f890fa8414291d2470c70d8e8038a2e988602d0532e",
+  "automated_checks": {
+    "node": {
+      "passed": 59,
+      "failed": 0,
+      "output": "local-v4-node-tests.txt",
+      "command": "node --test tests/core.test.mjs tests/site.test.mjs tests/story.test.mjs tests/compact.test.mjs"
+    },
+    "module_link": {
+      "passed": 5
+    },
+    "python_browser_scripts": {
+      "syntax": "passed",
+      "execution": "not_run"
+    },
+    "new_regression_tests": [
+      "Exact length/temperature/weight conversion, inverse conversion, zero and invalid input",
+      "Browser Markdown automatic/manual geometry and snap exit cases added; syntax checked only"
+    ],
+    "standalone_bundle": "rebuilt and initialized through HTTP"
+  },
+  "runtime_checks": {
+    "method": "Actual HTTP navigation and UI input through Codex in-app browser CUA",
+    "viewports": [
+      [
+        1440,
+        900
+      ],
+      [
+        1280,
+        720
+      ],
+      [
+        900,
+        780
+      ],
+      [
+        390,
+        844
+      ],
+      [
+        320,
+        568
+      ]
+    ],
+    "languages": [
+      "zh",
+      "en"
+    ],
+    "passed": [
+      "Chapter five initially has mandatory snapping; scrolling beyond it sets snap type to none",
+      "A further 0.35-page scroll advances freely without returning to chapter five; navigation back restores snapping",
+      "Narrow layouts hide Continue and Try the papers, show a chapter-number badge and readable headings, and do not overflow horizontally",
+      "Markdown grows the original note from 320x334 to 414x440; leaving restores 320x334 before user manipulation",
+      "A keyboard resize changes Markdown width to 422; another chapter preserves 422x440",
+      "A pointer drag marks the note manual and preserves its exact screen position and 414x440 size across a chapter switch",
+      "The 414x440 Markdown note remains inside the canvas at 1280x720",
+      "Plugin system navigation and chapter naming appear in Chinese and English",
+      "During creation, Today and Weekend remain hidden; completion shows only the generated plugin",
+      "Converter generation followed by Habit tracker generation keeps one live plugin and four side capsules, with base papers hidden",
+      "0.3048m converts to 1ft, 100C to 212F and the swap back to 100C, 0.45359237kg to 1lb",
+      "Language switching and capsule preview preserve converter input; there is exactly one plugin instance",
+      "Final converter paper has zero internal overflow at 320px and 390px; the swap button fits inside its paper",
+      "Root modular source, repository subpath and standalone bundle initialize through HTTP",
+      "No application console warnings or errors were observed"
+    ],
+    "measurements": {
+      "note_auto_compact": [
+        320,
+        334
+      ],
+      "note_auto_markdown": [
+        414,
+        440
+      ],
+      "note_manual_keyboard": [
+        422,
+        440
+      ],
+      "note_after_drag_and_chapter_switch": {
+        "x": 689.0375366210938,
+        "y": 176.9875030517578,
+        "width": 414,
+        "height": 440
+      },
+      "phone_heading_font_px": 16.3968,
+      "phone_heading_height_px": 28,
+      "tablet_heading_font_px": 18,
+      "converter_internal_overflow_at_320_and_390_px": 0,
+      "free_scroll_after_story_css_px": 315.2
+    }
+  },
+  "limitations": [
+    "Physical touch devices, long-running motion performance and remote CI were not tested",
+    "Python browser suites were updated and syntax checked, not executed locally",
+    "The bundled preview was tested through HTTP; file URL opening was not tested",
+    "Native chapter scroll snapping is a desktop feature; narrow layouts retain chapter tabs and Previous/Next controls"
+  ],
+  "prior_evidence": "LOCAL-V3-VALIDATION.json and earlier files describe historical revisions.",
+  "remote_writes": false
+}
